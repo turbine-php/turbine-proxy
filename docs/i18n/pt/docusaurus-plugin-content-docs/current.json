@@ -1,0 +1,30 @@
+{
+  "version.label": {
+    "message": "Próximo",
+    "description": "The label for version current"
+  },
+  "sidebar.docsSidebar.category.Getting Started": {
+    "message": "Primeiros Passos",
+    "description": "The sidebar item label"
+  },
+  "sidebar.docsSidebar.category.Features": {
+    "message": "Funcionalidades",
+    "description": "The sidebar item label"
+  },
+  "sidebar.docsSidebar.category.Configuration Reference": {
+    "message": "Referência de Configuração",
+    "description": "The sidebar item label"
+  },
+  "sidebar.docsSidebar.category.Dashboard Guide": {
+    "message": "Guia do Dashboard",
+    "description": "The sidebar item label"
+  },
+  "sidebar.docsSidebar.category.API Reference": {
+    "message": "Referência da API",
+    "description": "The sidebar item label"
+  },
+  "sidebar.docsSidebar.category.Deployment": {
+    "message": "Implantação",
+    "description": "The sidebar item label"
+  }
+}

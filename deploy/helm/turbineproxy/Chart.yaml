@@ -1,0 +1,18 @@
+apiVersion: v2
+name: turbineproxy
+description: Intelligent MySQL proxy with read/write splitting, analytics, and Prometheus metrics
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/your-org/turbineproxy
+sources:
+  - https://github.com/your-org/turbineproxy
+keywords:
+  - mysql
+  - proxy
+  - database
+  - analytics
+  - prometheus
+maintainers:
+  - name: TurbineProxy Contributors
+    url: https://github.com/your-org/turbineproxy

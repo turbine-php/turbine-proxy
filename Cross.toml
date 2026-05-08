@@ -1,0 +1,9 @@
+# cross.toml — configuration for https://github.com/cross-rs/cross
+#
+# Used by the release CI workflow to cross-compile musl targets without
+# requiring host toolchain installs.
+[build.env]
+passthrough = [
+  "CARGO_TERM_COLOR",
+  "RUST_BACKTRACE",
+]

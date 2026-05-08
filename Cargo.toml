@@ -1,0 +1,115 @@
+[package]
+name = "turbineproxy"
+version = "0.1.0"
+edition = "2021"
+description = "Intelligent MySQL proxy with read/write splitting, query analytics, and automatic index advice"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Networking & Buffers
+bytes = "1"
+byteorder = "1.5"
+
+# TLS
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+
+# Auth hashing
+sha1 = "0.11"
+sha2 = "0.11"
+hmac = "0.12"
+md5 = "0.7"
+base64 = "0.22"
+rand = "0.9"
+
+# Compression (MySQL protocol)
+flate2 = "1"
+
+# Serialization & Config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Analytics storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Dashboard web server
+axum = "0.7"
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+
+# Memory allocator
+mimalloc = "0.1"
+
+# HTTP client — used for cluster config sync (push to peer nodes)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+mysql = "26"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+tempfile = "3"
+criterion = { version = "0.5", features = ["async_tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[[bench]]
+name = "proxy_bench"
+harness = false
+
+# ── Debian package metadata (cargo-deb) ──────────────────────────────────────
+[package.metadata.deb]
+name = "turbineproxy"
+maintainer = "TurbineProxy Contributors"
+copyright = "2024 TurbineProxy Contributors"
+license-file = ["LICENSE-MIT", "4"]
+extended-description = """\
+TurbineProxy is an intelligent MySQL proxy with read/write splitting,
+query analytics, Prometheus metrics, and automatic index advice."""
+depends = "$auto"
+section = "net"
+priority = "optional"
+assets = [
+  # Binary
+  ["target/x86_64-unknown-linux-musl/release/turbineproxy", "usr/bin/", "755"],
+  # Dashboard assets
+  ["dashboard/dist/", "usr/share/turbineproxy/dashboard/dist/", "644"],
+  # Example config
+  ["turbineproxy.example.toml", "etc/turbineproxy/turbineproxy.example.toml", "644"],
+  # systemd unit
+  ["pkg/systemd/turbineproxy.service", "lib/systemd/system/turbineproxy.service", "644"],
+  # logrotate
+  ["pkg/logrotate/turbineproxy", "etc/logrotate.d/turbineproxy", "644"],
+]
+maintainer-scripts = "pkg/deb/scripts/"
+conf-files = ["/etc/turbineproxy/turbineproxy.example.toml"]
+
+# ── RPM package metadata (cargo-generate-rpm) ────────────────────────────────
+[package.metadata.generate-rpm]
+name = "turbineproxy"
+summary = "Intelligent MySQL proxy with analytics and Prometheus metrics"
+license = "MIT OR Apache-2.0"
+assets = [
+  { source = "target/x86_64-unknown-linux-musl/release/turbineproxy", dest = "/usr/bin/turbineproxy", mode = "0755" },
+  { source = "dashboard/dist/", dest = "/usr/share/turbineproxy/dashboard/dist/", mode = "0644" },
+  { source = "turbineproxy.example.toml", dest = "/etc/turbineproxy/turbineproxy.example.toml", mode = "0644", config = true },
+  { source = "pkg/systemd/turbineproxy.service", dest = "/lib/systemd/system/turbineproxy.service", mode = "0644" },
+  { source = "pkg/logrotate/turbineproxy", dest = "/etc/logrotate.d/turbineproxy", mode = "0644" },
+]
+[package.metadata.generate-rpm.requires]

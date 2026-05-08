@@ -1,0 +1,16 @@
+{
+  "name": "turbineproxy-mcp-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing TurbineProxy documentation and live metrics to AI assistants",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0"
+  }
+}

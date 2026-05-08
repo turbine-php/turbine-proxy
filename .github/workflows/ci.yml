@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Fast checks (no MySQL needed) ──────────────────────────────────────────
+  checks:
+    name: Checks (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ── Unit / doc tests (no MySQL needed) ─────────────────────────────────────
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (lib + bins)
+        run: cargo test --lib --bins
+
+  # ── Integration tests (real MySQL / MariaDB) ────────────────────────────────
+  integration-tests:
+    name: Integration — ${{ matrix.db-label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - db-label: MySQL 8.0
+            db-image: mysql:8.0
+            db-port: 3306
+          - db-label: MySQL 8.4
+            db-image: mysql:8.4
+            db-port: 3306
+          - db-label: MariaDB 10.11
+            db-image: mariadb:10.11
+            db-port: 3306
+          - db-label: MariaDB 11.4
+            db-image: mariadb:11.4
+            db-port: 3306
+
+    services:
+      mysql:
+        image: ${{ matrix.db-image }}
+        env:
+          # MySQL uses MYSQL_ROOT_PASSWORD; MariaDB accepts both.
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: turbineproxy_test
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: turbineproxy_test
+        ports:
+          - ${{ matrix.db-port }}:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache per DB image so linker artefacts don't conflict.
+          key: ${{ matrix.db-image }}
+
+      # Build both the proxy binary and the test binary in one shot.
+      - name: cargo build
+        run: cargo build
+
+      - name: Run integration tests
+        env:
+          TEST_MYSQL_HOST: 127.0.0.1
+          TEST_MYSQL_PORT: ${{ matrix.db-port }}
+          TEST_MYSQL_USER: root
+          TEST_MYSQL_PASS: root
+        # --test-threads=1 avoids DDL races between parallel tests.
+        run: cargo test --test integration_tests -- --test-threads=1 --nocapture

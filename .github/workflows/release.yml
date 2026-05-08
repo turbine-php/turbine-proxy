@@ -1,0 +1,346 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Build static musl binaries ────────────────────────────────────────────
+  build-linux:
+    name: Build Linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            artifact: turbineproxy-x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+            artifact: turbineproxy-aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build binary (musl static)
+        run: |
+          cross build --release --target ${{ matrix.target }}
+          ls -lh target/${{ matrix.target }}/release/turbineproxy
+
+      - name: Build frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          cd dashboard
+          npm ci
+          npm run build
+
+      - name: Package tarball
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          BIN="target/${{ matrix.target }}/release/turbineproxy"
+          STAGING="staging-${{ matrix.target }}"
+          mkdir -p "${STAGING}"
+          cp "${BIN}" "${STAGING}/turbineproxy"
+          cp turbineproxy.example.toml "${STAGING}/"
+          cp -r dashboard/dist "${STAGING}/dashboard/"
+          cp pkg/systemd/turbineproxy.service "${STAGING}/"
+          cp pkg/logrotate/turbineproxy "${STAGING}/turbineproxy.logrotate"
+          cp README.md "${STAGING}/"
+          tar -C "${STAGING}" \
+              -czf "${{ matrix.artifact }}-${TAG}.tar.gz" .
+          sha256sum "${{ matrix.artifact }}-${TAG}.tar.gz" \
+              > "${{ matrix.artifact }}-${TAG}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}-*.tar.gz
+            ${{ matrix.artifact }}-*.tar.gz.sha256
+
+  # ── Build macOS binaries ──────────────────────────────────────────────────
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            artifact: turbineproxy-x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+            artifact: turbineproxy-aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build binary
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          ls -lh target/${{ matrix.target }}/release/turbineproxy
+
+      - name: Build frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          cd dashboard
+          npm ci
+          npm run build
+
+      - name: Package tarball
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          BIN="target/${{ matrix.target }}/release/turbineproxy"
+          STAGING="staging-${{ matrix.target }}"
+          mkdir -p "${STAGING}"
+          cp "${BIN}" "${STAGING}/turbineproxy"
+          cp turbineproxy.example.toml "${STAGING}/"
+          cp -r dashboard/dist "${STAGING}/dashboard/"
+          cp README.md "${STAGING}/"
+          tar -C "${STAGING}" \
+              -czf "${{ matrix.artifact }}-${TAG}.tar.gz" .
+          shasum -a 256 "${{ matrix.artifact }}-${TAG}.tar.gz" \
+              > "${{ matrix.artifact }}-${TAG}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}-*.tar.gz
+            ${{ matrix.artifact }}-*.tar.gz.sha256
+
+  # ── Build .deb package ────────────────────────────────────────────────────
+  package-deb:
+    name: Build .deb
+    runs-on: ubuntu-latest
+    needs: [build-linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deb
+
+      - name: Install cargo-deb and musl tools
+        run: |
+          cargo install cargo-deb
+          sudo apt-get install -y --no-install-recommends musl-tools cmake
+
+      - name: Build binary (musl static)
+        run: cross build --release --target x86_64-unknown-linux-musl || \
+             cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Build frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cd dashboard && npm ci && npm run build
+
+      - name: Make maintainer scripts executable
+        run: chmod +x pkg/deb/scripts/*
+
+      - name: Build .deb
+        run: cargo deb --target x86_64-unknown-linux-musl --no-build
+
+      - name: Rename and checksum
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          DEB=$(ls target/x86_64-unknown-linux-musl/debian/*.deb | head -1)
+          DEST="turbineproxy_${TAG}_amd64.deb"
+          cp "${DEB}" "${DEST}"
+          sha256sum "${DEST}" > "${DEST}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: |
+            turbineproxy_*.deb
+            turbineproxy_*.deb.sha256
+
+  # ── Build .rpm package ────────────────────────────────────────────────────
+  package-rpm:
+    name: Build .rpm
+    runs-on: ubuntu-latest
+    needs: [build-linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rpm
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Build binary (musl static)
+        run: |
+          sudo apt-get install -y --no-install-recommends musl-tools cmake
+          cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Build frontend
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cd dashboard && npm ci && npm run build
+
+      - name: Build .rpm
+        run: cargo generate-rpm --target x86_64-unknown-linux-musl
+
+      - name: Rename and checksum
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          RPM=$(ls target/x86_64-unknown-linux-musl/generate-rpm/*.rpm | head -1)
+          DEST="turbineproxy-${TAG}-1.x86_64.rpm"
+          cp "${RPM}" "${DEST}"
+          sha256sum "${DEST}" > "${DEST}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: |
+            turbineproxy-*.rpm
+            turbineproxy-*.rpm.sha256
+
+  # ── Build and push Docker image ───────────────────────────────────────────
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Create GitHub Release ─────────────────────────────────────────────────
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-macos, package-deb, package-rpm]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Flatten artifacts directory
+        run: find artifacts/ -type f | xargs -I{} cp {} release-files/ || \
+             (mkdir -p release-files && find artifacts/ -type f -exec cp {} release-files/ \;)
+
+      - name: Generate combined checksums
+        run: |
+          cd release-files
+          sha256sum *.tar.gz *.deb *.rpm 2>/dev/null | tee SHA256SUMS || true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: TurbineProxy ${{ github.ref_name }}
+          body: |
+            ## TurbineProxy ${{ github.ref_name }}
+
+            ### Downloads
+
+            | Platform | File |
+            |---|---|
+            | Linux x86_64 (musl static) | `turbineproxy-x86_64-unknown-linux-musl-${{ github.ref_name }}.tar.gz` |
+            | Linux aarch64 (musl static) | `turbineproxy-aarch64-unknown-linux-musl-${{ github.ref_name }}.tar.gz` |
+            | macOS x86_64 | `turbineproxy-x86_64-apple-darwin-${{ github.ref_name }}.tar.gz` |
+            | macOS Apple Silicon | `turbineproxy-aarch64-apple-darwin-${{ github.ref_name }}.tar.gz` |
+            | Debian/Ubuntu `.deb` | `turbineproxy_${{ github.ref_name }}_amd64.deb` |
+            | RHEL/Fedora `.rpm` | `turbineproxy-${{ github.ref_name }}-1.x86_64.rpm` |
+            | Docker | `ghcr.io/${{ github.repository }}:${{ github.ref_name }}` |
+
+            ### Quick install (Linux x86_64)
+            ```sh
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/turbineproxy-x86_64-unknown-linux-musl-${{ github.ref_name }}.tar.gz | tar -xz
+            sudo mv turbineproxy /usr/local/bin/
+            ```
+
+            ### Debian/Ubuntu
+            ```sh
+            curl -fsSLO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/turbineproxy_${{ github.ref_name }}_amd64.deb
+            sudo dpkg -i turbineproxy_${{ github.ref_name }}_amd64.deb
+            sudo systemctl enable --now turbineproxy
+            ```
+
+            ### Docker
+            ```sh
+            docker run -p 3307:3307 -p 8080:8080 \
+              -v ./turbineproxy.toml:/app/turbineproxy.toml:ro \
+              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```
+
+            All checksums: `SHA256SUMS`
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

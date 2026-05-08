@@ -1,0 +1,48 @@
+# Maintainer: your-name <you@example.com>
+pkgname=turbineproxy
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Intelligent MySQL proxy with read/write splitting, analytics, and Prometheus metrics"
+arch=('x86_64' 'aarch64')
+url="https://github.com/your-org/turbineproxy"
+license=('MIT' 'Apache')
+depends=()
+makedepends=()
+source_x86_64=("https://github.com/your-org/turbineproxy/releases/download/v${pkgver}/turbineproxy-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("https://github.com/your-org/turbineproxy/releases/download/v${pkgver}/turbineproxy-aarch64-unknown-linux-musl.tar.gz")
+sha256sums_x86_64=('REPLACE_WITH_SHA256')
+sha256sums_aarch64=('REPLACE_WITH_SHA256')
+
+package() {
+    # Binary
+    install -Dm755 "${srcdir}/turbineproxy" "${pkgdir}/usr/bin/turbineproxy"
+
+    # Dashboard assets
+    if [ -d "${srcdir}/dashboard/dist" ]; then
+        find "${srcdir}/dashboard/dist" -type f | while IFS= read -r f; do
+            install -Dm644 "${f}" "${pkgdir}/usr/share/turbineproxy/${f#${srcdir}/}"
+        done
+    fi
+
+    # Config (example)
+    install -Dm644 "${srcdir}/turbineproxy.example.toml" \
+        "${pkgdir}/etc/turbineproxy/turbineproxy.example.toml"
+
+    # systemd unit
+    install -Dm644 "${srcdir}/turbineproxy.service" \
+        "${pkgdir}/usr/lib/systemd/system/turbineproxy.service"
+
+    # logrotate
+    install -Dm644 "${srcdir}/turbineproxy.logrotate" \
+        "${pkgdir}/etc/logrotate.d/turbineproxy"
+}
+
+post_install() {
+    systemd-sysusers /usr/lib/sysusers.d/turbineproxy.conf 2>/dev/null || true
+    echo "  Edit /etc/turbineproxy/turbineproxy.toml then:"
+    echo "  # systemctl enable --now turbineproxy"
+}
+
+post_upgrade() {
+    post_install
+}

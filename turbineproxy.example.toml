@@ -1,0 +1,337 @@
+# TurbineProxy Configuration
+# Copy this file to turbineproxy.toml and adjust for your environment.
+#
+# ── Configuration Formats ─────────────────────────────────────────────────────
+#
+# TurbineProxy supports two configuration formats:
+#
+#   NEW (recommended) — unified [shared] block
+#     Backend credentials and pool settings live under [shared]. Both the
+#     MySQL and PostgreSQL listeners inherit them automatically. Use this
+#     when running PostgreSQL-only or dual-protocol (MySQL + PostgreSQL).
+#
+#   LEGACY — flat top-level keys
+#     The original MySQL-only format. Top-level [primary], listen_addr, etc.
+#     Still fully supported for backward compatibility. When top-level
+#     [primary] or listen_addr is present the MySQL listener starts
+#     automatically; the [shared] block is ignored.
+#
+# ── NEW unified format (shown below) ─────────────────────────────────────────
+
+# ── Shared backend settings ───────────────────────────────────────────────────
+# Settings here are inherited by both [mysql] and [pgsql] listeners when those
+# sections do not override them.
+[shared]
+max_connections = 1000
+pool_size       = 20
+# connection_max_idle_secs = 55
+# auth_cache_ttl_secs      = 300
+# read_your_own_writes_ms  = 0
+
+# Primary (read-write) backend.  Both MySQL and PostgreSQL listeners share this
+# backend unless overridden inside [mysql] or [pgsql].
+[shared.primary]
+addr     = "127.0.0.1:3306"
+user     = "dbuser"
+password = "secret"
+database = "myapp"
+
+# TLS for the primary connection (optional)
+# tls_mode = "off"             # off | required | verify-ca | verify-identity
+# tls_ca   = "/etc/ssl/ca.pem"
+# tls_cert = "/etc/ssl/cert.pem"
+# tls_key  = "/etc/ssl/key.pem"
+
+# ── Shared replica backends ───────────────────────────────────────────────────
+# Receive read queries from both MySQL and PostgreSQL listeners.
+# Add multiple [[shared.replicas]] sections for additional replicas.
+# [[shared.replicas]]
+# addr     = "replica-1:3306"
+# user     = "dbuser"
+# password = "secret"
+# database = "myapp"
+# weight   = 100    # relative weight for weighted round-robin (default: 100)
+# backup   = false  # if true, only used when all non-backup replicas are down
+
+# ── Shared per-user access rules (optional) ───────────────────────────────────
+# When non-empty, only listed users can connect.  Omit to accept any credentials
+# (transparent / open mode — backward compatible).
+# [[shared.users]]
+# name            = "app"
+# password        = "apppass"
+# allow_writes    = true   # false = SELECT / SHOW / EXPLAIN only
+# max_connections = 0      # 0 = unlimited
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LEGACY format reminder (MySQL-only, still fully supported):
+#
+#   listen_addr     = "0.0.0.0:3307"
+#   max_connections = 1000
+#   pool_size       = 20
+#
+#   [primary]
+#   addr     = "127.0.0.1:3306"
+#   user     = "root"
+#   password = ""
+#   database = "myapp"
+#
+#   [[replicas]]
+#   addr   = "127.0.0.1:3307"
+#   weight = 100
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── MySQL listener (optional) ─────────────────────────────────────────────────
+# The MySQL listener starts automatically only when [primary] or listen_addr
+# appear at the top level (legacy format).  In the new unified format ([shared]),
+# the MySQL listener is DISABLED unless you add an explicit [mysql] section with
+# enabled = true.
+#
+# [mysql]
+# enabled     = true
+# listen_addr = "0.0.0.0:3307"
+# # All other settings (primary, replicas, pool_size …) are inherited from [shared]
+# # unless overridden here.
+
+# ── PostgreSQL listener ───────────────────────────────────────────────────────
+# When enabled, the proxy also listens on a PostgreSQL port and routes
+# client connections to the backend(s) defined in [shared] (or overridden here).
+[pgsql]
+enabled     = true
+listen_addr = "0.0.0.0:5432"
+
+# Database used for internal health probes (SELECT 1, pg_is_in_recovery()).
+# Client sessions may connect to any database; probes always use this one.
+# Must exist on every backend. Default: "postgres".
+health_check_database = "postgres"
+
+# Override pool settings for PostgreSQL only (optional — inherits from [shared]):
+# pool_size                 = 20
+# max_connections           = 1000
+# connection_max_idle_secs  = 55
+# read_your_own_writes_ms   = 0
+
+# PostgreSQL-specific backend override (optional — inherits from [shared.primary]):
+# [pgsql.primary]
+# addr     = "pg-primary:5432"
+# user     = "postgres"
+# password = "secret"
+# database = "myapp"
+
+# PostgreSQL health-check & failover thresholds (optional — inherits from [ha]):
+# health_check_interval_secs = 10
+# max_replica_lag_ms         = 5000
+# primary_failover_threshold = 3
+
+# PostgreSQL frontend TLS (client → proxy, optional):
+# ssl_cert = "/etc/turbineproxy/pg.crt"
+# ssl_key  = "/etc/turbineproxy/pg.key"
+
+# ── Frontend TLS (client → MySQL proxy, optional) ─────────────────────────────
+# Encrypt connections from your application to the MySQL listener.
+# Requires a certificate and key in PEM format.
+#
+# [frontend_tls]
+# enabled = false
+# cert = "/etc/turbineproxy/server.crt"
+# key  = "/etc/turbineproxy/server.key"
+
+# ── Security ──────────────────────────────────────────────────────────────────
+# Applied to both MySQL and PostgreSQL listeners.
+
+# SQL injection detection.
+# When enabled, every inbound query is checked against a built-in library of
+# classic and modern injection patterns (UNION SELECT, stacked queries, SLEEP(),
+# BENCHMARK(), INTO OUTFILE, hex encoding, xp_cmdshell, etc.).
+# Blocked queries return an error and are counted in the dashboard.
+# sql_injection_protection = false
+
+# Append-only NDJSON audit log.
+# Every query is recorded with: timestamp, user, client IP, SQL text, routing
+# destination (primary/replica), duration_ms, and whether it errored.
+# Rotate externally with logrotate; the proxy re-opens the file on SIGHUP.
+# audit_log = "/var/log/turbineproxy/audit.log"
+
+# Query allowlist (whitelist mode).
+# When non-empty, ONLY queries whose normalised fingerprint appears in this list
+# are permitted to execute. All others are blocked with an error.
+# query_whitelist = [
+#   "SELECT * FROM users WHERE id = ?",
+#   "INSERT INTO events (user_id, event) VALUES (?, ?)",
+# ]
+
+# ── Per-connection timeouts (optional) ────────────────────────────────────────
+# Maximum duration (ms) for an open transaction before the proxy aborts it.
+# 0 = disabled (default).
+# max_transaction_time_ms = 30000
+
+# Maximum duration (ms) for a single query.  0 = disabled (default).
+# max_query_time_ms = 5000
+
+# Maximum idle time (ms) for an open transaction.  0 = disabled (default).
+# max_transaction_idle_ms = 0
+
+# ── Query analytics ───────────────────────────────────────────────────────────
+[analytics]
+enabled = true
+db_path = "turbineproxy_analytics.db"
+# Queries slower than this threshold (in ms) are logged as slow queries
+slow_query_ms = 100
+# How many days of time-series data to retain before pruning. Default: 30.
+retention_days = 30
+
+# ── Web dashboard ─────────────────────────────────────────────────────────────
+[dashboard]
+enabled = true
+listen_addr = "0.0.0.0:8080"
+
+# Dashboard authentication (optional but recommended).
+# When username and password are set, the UI requires login.
+# Leave both empty (or omit) to disable auth — useful during local development.
+username = ""
+password = ""
+
+# ── High-availability & health checks ────────────────────────────────────────
+[ha]
+enabled = true
+# How often to run backend health checks (seconds). Default: 5.
+health_check_interval_secs = 5
+# Replica replication lag above this threshold (ms) is considered unhealthy. Default: 5000.
+max_replica_lag_ms = 5000
+# Consecutive primary health check failures before triggering failover. Default: 3.
+primary_failover_threshold = 3
+
+# Galera / Percona XtraDB Cluster node-state checks.
+# When true, the health checker queries SHOW GLOBAL STATUS LIKE 'wsrep_local_state'
+# on every node. A node is only included in the read pool when wsrep_local_state = 4
+# (SYNCED). Nodes that are Joining (1), Donor/Desynced (2), or Joined (3) are excluded.
+# Safe to enable on standard async replication — nodes without wsrep are unaffected.
+# Default: false.
+# galera_check = false
+
+# ── MySQL Group Replication / InnoDB Cluster (optional) ───────────────────────
+# When enabled, TurbineProxy polls performance_schema.replication_group_members
+# on any reachable backend and automatically re-routes writes to the elected
+# PRIMARY — without a proxy restart.
+#
+# Requirements:
+#   - MySQL Group Replication or InnoDB Cluster must be configured on the servers
+#   - The proxy user must have SELECT on performance_schema
+#   - All group members must be listed as primary or replicas in this config
+#
+# [group_replication]
+# enabled = true
+# check_interval_secs = 5  # how often to poll for primary changes (default: 5)
+
+# ── TurbineProxy Cluster (multi-instance config sync) ─────────────────────────
+#
+# When running multiple TurbineProxy instances (e.g. behind a load balancer),
+# config changes made on one node can be automatically pushed to all peers.
+#
+# Every reload triggered by SIGHUP, POST /api/reload, or POST /api/reload/backends
+# pushes the current config TOML to each peer's POST /api/sync endpoint.
+# The peer validates the request using the shared secret and applies the config
+# atomically (hot-swaps the backend pool; no restart required).
+#
+# Security notes:
+#   - The shared secret is sent as `Authorization: Bearer <secret>` over HTTP.
+#     Use HTTPS termination (nginx/caddy) in front of the dashboard for production.
+#   - A node does NOT push to itself — list only the OTHER nodes as peers.
+#   - Set the same secret on every node; empty secret disables sync entirely.
+#
+# [cluster]
+# peers = ["http://node2.internal:8080", "http://node3.internal:8080"]
+# secret = "change-this-to-a-strong-random-string"
+
+# ── Query Routing Rules (optional) ────────────────────────────────────────────
+#
+# Rules are evaluated in declaration order. The first match wins.
+# If no rule matches, the built-in heuristic applies (SELECT → replica).
+#
+# Fields:
+#   match_pattern        — PCRE regex matched against the raw SQL text
+#   match_digest         — Exact normalised query fingerprint (overrides match_pattern)
+#   user                 — Restrict to a specific MySQL user (omit = all users)
+#   schema               — Restrict to a specific database/schema (omit = all)
+#   destination          — "primary" | "replica" | "any" (default heuristic)
+#   destination_hostgroup — Route to a specific hostgroup index: 0=primary, 1..N=replica N
+#                           Takes precedence over `destination` when specified.
+#   cache_ttl_secs       — 0 = no cache; >0 = cache with default TTL
+#   mirror_to            — Address (host:port) to also send matching queries to
+#                          (fire-and-forget, client always gets the real backend response).
+#                          Use this to shadow traffic to a canary or new server.
+#   rollout_pct          — 1–100: percentage of matching queries routed via this rule.
+#                          Remaining traffic falls through to the next rule / heuristic.
+#                          Omit or set to 0 to apply the rule to all matching queries.
+#   comment              — Human-readable description shown in the dashboard
+#
+# Example: force read-after-write queries to the primary
+# [[query_rules]]
+# match_pattern = "SELECT .* FROM users WHERE id = \\?"
+# destination = "primary"
+# cache_ttl_secs = 0
+# comment = "Read-after-write for user lookups"
+#
+# Example: cache expensive report queries on replica
+# [[query_rules]]
+# match_pattern = "(?i)SELECT .* FROM (orders|invoices)"
+# destination = "replica"
+# cache_ttl_secs = 30
+# comment = "Heavy reporting queries — replica + cache"
+#
+# Example: force a specific user's traffic to primary
+# [[query_rules]]
+# user = "admin"
+# destination = "primary"
+# comment = "Admin user always uses primary"
+#
+# Example: pin reporting queries to a specific replica (hostgroup 2)
+# [[query_rules]]
+# match_pattern = "(?i)SELECT .* FROM report_"
+# destination_hostgroup = 2
+# cache_ttl_secs = 60
+# comment = "Reports pinned to replica 2 (hostgroup 2)"
+#
+# Example: shadow 10 % of SELECT traffic to a canary server
+# [[query_rules]]
+# match_pattern = "(?i)^SELECT "
+# destination = "replica"
+# mirror_to = "canary-db:3306"
+# rollout_pct = 10
+# comment = "Shadow 10% of reads to canary for validation"
+
+# ── Query Rewriting Rules (optional) ──────────────────────────────────────────
+#
+# Rewrite rules alter the SQL text before it is dispatched to the backend.
+# They run before routing rules and the query cache.
+#
+# Fields:
+#   match_pattern    — PCRE regex matched against the raw SQL text (required)
+#   replace_with     — Regex replacement string; supports $1/$2 backreferences
+#   add_limit        — Append LIMIT N if the SELECT has no existing LIMIT clause
+#   add_timeout_ms   — Inject /*+ MAX_EXECUTION_TIME(N) */ after SELECT keyword
+#   block            — true = reject the query and return an error to the client
+#   comment          — Human-readable description shown in the Rewrite Rules tab
+#
+# Example: protect a large table from unbounded scans
+# [[rewrite_rules]]
+# match_pattern = "(?i)SELECT .* FROM large_table"
+# add_limit = 1000
+# comment = "Force LIMIT 1000 on large_table queries"
+
+# Example: cap all SELECTs at 5 seconds execution time
+# [[rewrite_rules]]
+# match_pattern = "(?i)^SELECT "
+# add_timeout_ms = 5000
+# comment = "Cap all SELECTs at 5s"
+
+# Example: replace SELECT * with explicit columns (audit helper)
+# [[rewrite_rules]]
+# match_pattern = "(?i)SELECT \\* FROM users"
+# replace_with = "SELECT id, email, created_at FROM users"
+# comment = "Rewrite SELECT * on users to explicit column list"
+
+# Example: block DDL statements from application connections
+# [[rewrite_rules]]
+# match_pattern = "(?i)^(DROP|TRUNCATE|ALTER)\\s"
+# block = true
+# comment = "Block destructive DDL from application layer"

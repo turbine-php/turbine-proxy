@@ -1,0 +1,13 @@
+/var/log/turbineproxy/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 turbineproxy adm
+    sharedscripts
+    postrotate
+        systemctl kill --kill-who=main --signal=SIGUSR1 turbineproxy.service 2>/dev/null || true
+    endscript
+}

@@ -1,0 +1,22 @@
+{
+  "navbar.items.__docId__docs.label": {
+    "message": "Docs",
+    "description": "The label for the docs navbar item"
+  },
+  "navbar.items.__href__/docs/api/rest.label": {
+    "message": "API",
+    "description": "The label for the API navbar item"
+  },
+  "footer.links.0.title": {
+    "message": "Docs",
+    "description": "Footer section title"
+  },
+  "footer.links.1.title": {
+    "message": "Funcionalidades",
+    "description": "Footer section title"
+  },
+  "footer.links.2.title": {
+    "message": "Comunidade",
+    "description": "Footer section title"
+  }
+}

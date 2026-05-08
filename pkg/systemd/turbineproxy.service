@@ -1,0 +1,32 @@
+[Unit]
+Description=TurbineProxy — Intelligent MySQL Proxy
+Documentation=https://github.com/your-org/turbineproxy
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=turbineproxy
+Group=turbineproxy
+ExecStart=/usr/bin/turbineproxy
+WorkingDirectory=/usr/share/turbineproxy
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=turbineproxy
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadOnlyPaths=/
+ReadWritePaths=/var/log/turbineproxy
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+/**
+ * CSS custom properties for TurbineProxy docs theme.
+ */
+
+:root {
+  --ifm-color-primary: #e85d00;
+  --ifm-color-primary-dark: #d15400;
+  --ifm-color-primary-darker: #c54f00;
+  --ifm-color-primary-darkest: #a24100;
+  --ifm-color-primary-light: #ff6a00;
+  --ifm-color-primary-lighter: #ff7114;
+  --ifm-color-primary-lightest: #ff8a40;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #ff7a1a;
+  --ifm-color-primary-dark: #ff6b00;
+  --ifm-color-primary-darker: #f56500;
+  --ifm-color-primary-darkest: #cc5400;
+  --ifm-color-primary-light: #ff8933;
+  --ifm-color-primary-lighter: #ff9347;
+  --ifm-color-primary-lightest: #ffb07a;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}

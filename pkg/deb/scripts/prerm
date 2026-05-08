@@ -1,0 +1,13 @@
+#!/bin/sh
+# prerm — runs before .deb removal
+
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop turbineproxy.service 2>/dev/null || true
+        systemctl disable turbineproxy.service 2>/dev/null || true
+    fi
+fi
+
+exit 0

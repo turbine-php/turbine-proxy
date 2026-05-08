@@ -1,0 +1,113 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/your-org/turbineproxy
+  pullPolicy: IfNotPresent
+  # Overrides the image tag; defaults to Chart.appVersion
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop: ["ALL"]
+
+# ── Ports ───────────────────────────────────────────────────────────────────
+proxy:
+  port: 3307
+
+dashboard:
+  port: 8080
+
+service:
+  type: ClusterIP
+  proxyPort: 3307
+  dashboardPort: 8080
+
+# ── Config ──────────────────────────────────────────────────────────────────
+# Provide a turbineproxy.toml as a multi-line string.
+# The chart mounts it at /app/turbineproxy.toml.
+config: |
+  listen_addr = "0.0.0.0:3307"
+  max_connections = 1000
+  pool_size = 10
+
+  [primary]
+  addr = "mysql-primary:3306"
+  user = "root"
+  password = "changeme"
+  database = "app"
+
+# ── Persistence for analytics SQLite ───────────────────────────────────────
+persistence:
+  enabled: false
+  storageClass: ""
+  size: 1Gi
+  mountPath: /app
+
+# ── Resources ───────────────────────────────────────────────────────────────
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+# ── Autoscaling ─────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# ── Probes ──────────────────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: dashboard
+  initialDelaySeconds: 10
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: dashboard
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+nodeSelector: {}
+tolerations: []
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - turbineproxy
+          topologyKey: kubernetes.io/hostname

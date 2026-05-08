@@ -1,0 +1,369 @@
+# docker-compose.yml — Local MySQL + PostgreSQL instances for TurbineProxy tests
+#
+# ── MySQL ──────────────────────────────────────────────────────────────────────
+# docker compose up mysql80 -d                  # MySQL 8.0 primary  → 3306
+# docker compose up mysql80-replica -d          # MySQL 8.0 replica  → 3337
+# docker compose up mysql84 -d                  # MySQL 8.4          → 3316
+# docker compose up mysql9 -d                   # MySQL 9.x          → 3336
+# docker compose up mariadb -d                  # MariaDB 10.11      → 3326
+# docker compose up mariadb11 -d                # MariaDB 11 primary → 3346
+# docker compose up mariadb11-replica -d        # MariaDB 11 replica → 3357
+#
+# Replication setup (run AFTER primary + replica are healthy):
+#   docker compose up mysql80-replication-setup   # wires mysql80 → mysql80-replica
+#   docker compose up mariadb11-replication-setup # wires mariadb11 → mariadb11-replica
+#
+# ── PostgreSQL ─────────────────────────────────────────────────────────────────
+# docker compose up postgres16 -d               # PG 16 primary  → 5432
+# docker compose up postgres16-replica -d       # PG 16 replica  → 5433
+# docker compose up postgres18 -d               # PG 18 primary  → 5442
+# docker compose up postgres18-replica -d       # PG 18 replica  → 5443
+#
+# ── Full stack (all DBs) ───────────────────────────────────────────────────────
+# docker compose up -d
+# docker compose down -v                        # Stop + wipe all volumes
+#
+# NOTE: If you previously ran mysql80 without GTIDs, wipe its volume first:
+#   docker compose rm -fsv mysql80 && docker volume rm turbineproxy_mysql80_data
+#
+# ── Run tests ──────────────────────────────────────────────────────────────────
+# cargo test --test integration_tests    -- --test-threads=1
+# cargo test --test pg_integration_tests -- --test-threads=1
+# cargo test --test cluster_tests        -- --test-threads=1
+# cargo bench
+
+services:
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MySQL 8.0 — primary (GTID enabled; has streaming replica)
+  # ────────────────────────────────────────────────────────────────────────────
+  mysql80:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: turbineproxy_test
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - mysql80_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --server-id=1
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MySQL 8.0 — read-only streaming replica of mysql80
+  # ────────────────────────────────────────────────────────────────────────────
+  mysql80-replica:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: turbineproxy_test
+    ports:
+      - "3337:3306"
+    depends_on:
+      mysql80:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mysql80_replica_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --server-id=2
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+      --relay-log=relay-bin
+      --log-replica-updates=ON
+      --read-only=ON
+      --skip-replica-start=ON
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # One-shot: wires mysql80 → mysql80-replica (run once after both healthy)
+  # ────────────────────────────────────────────────────────────────────────────
+  mysql80-replication-setup:
+    image: mysql:8.0
+    depends_on:
+      mysql80:
+        condition: service_healthy
+      mysql80-replica:
+        condition: service_healthy
+    environment:
+      PRIMARY_HOST: mysql80
+      REPLICA_HOST: mysql80-replica
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - ./tests/fixtures/mysql_replication_setup.sh:/setup.sh:ro
+    entrypoint: ["/bin/bash", "/setup.sh"]
+    restart: "no"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MySQL 8.4 — standalone (LTS series)
+  # ────────────────────────────────────────────────────────────────────────────
+  mysql84:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: turbineproxy_test
+    ports:
+      - "3316:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - mysql84_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MySQL 9 — standalone (latest 9.x Innovation series)
+  # ────────────────────────────────────────────────────────────────────────────
+  mysql9:
+    image: mysql:9
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: turbineproxy_test
+    ports:
+      - "3336:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - mysql9_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MariaDB 10.11 — standalone (LTS)
+  # ────────────────────────────────────────────────────────────────────────────
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: turbineproxy_test
+    ports:
+      - "3326:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MariaDB 11 — primary (GTID enabled; has streaming replica)
+  # ────────────────────────────────────────────────────────────────────────────
+  mariadb11:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: turbineproxy_test
+    ports:
+      - "3346:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - mariadb11_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --server-id=1
+      --log-bin=mariadb-bin
+      --binlog-format=ROW
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # MariaDB 11 — read-only streaming replica of mariadb11
+  # ────────────────────────────────────────────────────────────────────────────
+  mariadb11-replica:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: turbineproxy_test
+    ports:
+      - "3357:3306"
+    depends_on:
+      mariadb11:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mariadb11_replica_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --server-id=2
+      --relay-log=relay-bin
+      --log-replica-updates=ON
+      --read-only=ON
+      --skip-replica-start=ON
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # One-shot: wires mariadb11 → mariadb11-replica (run once after both healthy)
+  # ────────────────────────────────────────────────────────────────────────────
+  mariadb11-replication-setup:
+    image: mariadb:11
+    depends_on:
+      mariadb11:
+        condition: service_healthy
+      mariadb11-replica:
+        condition: service_healthy
+    environment:
+      PRIMARY_HOST: mariadb11
+      REPLICA_HOST: mariadb11-replica
+      MARIADB_ROOT_PASSWORD: root
+    volumes:
+      - ./tests/fixtures/mariadb11_replication_setup.sh:/setup.sh:ro
+    entrypoint: ["/bin/bash", "/setup.sh"]
+    restart: "no"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL 16 — primary (WAL streaming replication enabled)
+  # ────────────────────────────────────────────────────────────────────────────
+  postgres16:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: turbineproxy_test
+      POSTGRES_HOST_AUTH_METHOD: "trust"
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - postgres16_data:/var/lib/postgresql/data
+      - ./tests/fixtures/pg_primary_init.sh:/docker-entrypoint-initdb.d/01_init.sh:ro
+    command: >
+      postgres
+        -c wal_level=replica
+        -c max_wal_senders=10
+        -c wal_keep_size=64
+        -c hot_standby=on
+        -c log_min_messages=warning
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL 16 — streaming replica of postgres16
+  # ────────────────────────────────────────────────────────────────────────────
+  postgres16-replica:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGPASSWORD: postgres
+      PG_PRIMARY_HOST: postgres16
+    ports:
+      - "5433:5432"
+    depends_on:
+      postgres16:
+        condition: service_healthy
+    volumes:
+      - postgres16_replica_data:/var/lib/postgresql/data
+      - ./tests/fixtures/pg_replica_init.sh:/pg_replica_init.sh:ro
+    entrypoint: ["/bin/bash", "/pg_replica_init.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL 18 — primary (WAL streaming replication enabled)
+  # ────────────────────────────────────────────────────────────────────────────
+  postgres18:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: turbineproxy_test
+      POSTGRES_HOST_AUTH_METHOD: "trust"
+      PGDATA: /var/lib/postgresql/18/main
+    ports:
+      - "5442:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+    volumes:
+      - postgres18_data:/var/lib/postgresql
+      - ./tests/fixtures/pg_primary_init.sh:/docker-entrypoint-initdb.d/01_init.sh:ro
+    command: >
+      postgres
+        -c wal_level=replica
+        -c max_wal_senders=10
+        -c wal_keep_size=64
+        -c hot_standby=on
+        -c log_min_messages=warning
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # PostgreSQL 18 — streaming replica of postgres18
+  # ────────────────────────────────────────────────────────────────────────────
+  postgres18-replica:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      PGPASSWORD: postgres
+      PG_PRIMARY_HOST: postgres18
+      PGDATA: /var/lib/postgresql/18/main
+    ports:
+      - "5443:5432"
+    depends_on:
+      postgres18:
+        condition: service_healthy
+    volumes:
+      - postgres18_replica_data:/var/lib/postgresql
+      - ./tests/fixtures/pg_replica_init.sh:/pg_replica_init.sh:ro
+    entrypoint: ["/bin/bash", "/pg_replica_init.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mysql80_data:
+  mysql80_replica_data:
+  mysql84_data:
+  mysql9_data:
+  mariadb_data:
+  mariadb11_data:
+  mariadb11_replica_data:
+  postgres16_data:
+  postgres16_replica_data:
+  postgres18_data:
+  postgres18_replica_data:

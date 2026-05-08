@@ -1,0 +1,21 @@
+# https://lefthook.dev
+# Run: lefthook install
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+    clippy:
+      glob: "*.rs"
+      run: cargo clippy --all-targets -- -D warnings
+    dashboard-lint:
+      root: "dashboard/"
+      glob: "src/**/*.{js,jsx,ts,tsx}"
+      run: npx eslint {staged_files} --max-warnings 0
+
+commit-msg:
+  commands:
+    commitlint:
+      run: npx --prefix ./dashboard commitlint --edit {1}
