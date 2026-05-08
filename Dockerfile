@@ -18,18 +18,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN rustup target add x86_64-unknown-linux-musl
 
+# build.rs skips npm when this is set (dashboard is built in the frontend-builder stage)
+ENV TURBINEPROXY_SKIP_DASHBOARD_BUILD=1
+
 WORKDIR /build
 
 # ── Dependency-cache layer ──
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && printf 'fn main(){}' > src/main.rs \
+RUN mkdir -p src benches \
+    && printf 'fn main(){}' > src/main.rs \
+    && printf 'fn main(){}' > benches/proxy_bench.rs \
     && CARGO_INCREMENTAL=0 cargo build --release \
            --target x86_64-unknown-linux-musl \
-    && rm -rf src target/x86_64-unknown-linux-musl/release/turbineproxy \
+    && rm -rf src benches target/x86_64-unknown-linux-musl/release/turbineproxy \
               target/x86_64-unknown-linux-musl/release/.fingerprint/turbineproxy-*
 
 # ── Full source build ──
 COPY src ./src
+COPY benches ./benches
 RUN CARGO_INCREMENTAL=0 cargo build --release \
         --target x86_64-unknown-linux-musl
 
