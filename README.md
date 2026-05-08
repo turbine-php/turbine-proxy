@@ -7,6 +7,11 @@
 
 **High-performance MySQL & PostgreSQL proxy** with connection pooling, automatic read/write splitting, query analytics, and an embedded dashboard.
 
+> [!WARNING]
+> This project is currently under active development.
+> Features, APIs, and configuration may change between releases.
+> If you find bugs, regressions, or unclear behavior, please open an issue with reproduction steps.
+
 ![TurbineProxy Dashboard](docs/static/img/dashboard.png)
 
 ```
@@ -63,10 +68,26 @@ chmod +x turbineproxy
 
 # 2. Create a minimal config
 cat > turbineproxy.toml << 'EOF'
-[primary]
+[shared]
+max_connections = 1000
+pool_size       = 20
+
+[shared.primary]
 addr     = "127.0.0.1:3306"
 user     = "root"
 password = "secret"
+database = "myapp"
+
+[mysql]
+enabled     = true
+listen_addr = "0.0.0.0:3307"
+
+[pgsql]
+enabled = false
+
+[dashboard]
+enabled     = true
+listen_addr = "0.0.0.0:8080"
 EOF
 
 # 3. Run
@@ -89,27 +110,49 @@ docker run -d \
 See [turbineproxy.example.toml](turbineproxy.example.toml) for all options, or the [full reference](https://docs.turbineproxy.com/docs/configuration/reference).
 
 ```toml
-listen_addr     = "0.0.0.0:3307"
+[shared]
 max_connections = 1000
 pool_size       = 20
 
-[primary]
+[shared.primary]
 addr     = "db-primary:3306"
 user     = "proxy"
 password = "secret"
+database = "myapp"
 
-[[replicas]]
+[[shared.replicas]]
 addr     = "db-replica-1:3306"
 user     = "proxy"
 password = "secret"
+database = "myapp"
+weight   = 100
+
+[mysql]
+enabled     = true
+listen_addr = "0.0.0.0:3307"
+
+[pgsql]
+enabled     = true
+listen_addr = "0.0.0.0:5432"
+health_check_database = "postgres"
 
 [analytics]
-enabled       = true
+enabled = true
+db_path = "turbineproxy_analytics.db"
 slow_query_ms = 100
+retention_days = 30
 
 [dashboard]
-addr   = "0.0.0.0:8080"
-secret = "change-me"
+enabled     = true
+listen_addr = "0.0.0.0:8080"
+username    = "admin"
+password    = "change-me"
+
+[ha]
+enabled = true
+health_check_interval_secs = 5
+max_replica_lag_ms = 5000
+primary_failover_threshold = 3
 ```
 
 ## Building from Source
