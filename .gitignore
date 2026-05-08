@@ -33,6 +33,8 @@ turbineproxy.toml
 *.db
 *.sqlite
 *.sqlite3
+turbineproxy_analytics.db-shm
+turbineproxy_analytics.db-wal
 
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
