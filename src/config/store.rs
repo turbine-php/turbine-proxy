@@ -893,6 +893,8 @@ impl ConfigStore {
                 backup: row.backup,
                 init_connect: Vec::new(),
                 resolution_family: "system".to_string(),
+                compression: crate::config::BackendCompression::None,
+                ssl_keylog_file: String::new(),
             };
             if row.role == "primary" {
                 primary = Some(cfg);

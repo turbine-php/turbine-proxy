@@ -4,55 +4,51 @@ sidebar_position: 3
 
 # MCP Server
 
-TurbineProxy ships with a **Model Context Protocol (MCP)** server that exposes documentation and live proxy data to AI assistants like GitHub Copilot, Claude, and others.
+TurbineProxy has **two MCP server implementations**:
 
-## What Is MCP?
+1. **Proxy embedded MCP** — runs inside the `turbineproxy` binary, served at `POST /mcp` on the dashboard port. Exposes live operational data (pool stats, slow queries, backend health, etc.) to AI assistants. No extra process needed.
+2. **Docs MCP** — a standalone Node.js server in `docs/mcp-server/` that indexes the documentation site and exposes it as MCP tools. Useful for AI-assisted configuration and rule authoring.
 
-MCP (Model Context Protocol) is an open standard that allows AI tools to query external context sources. By running the TurbineProxy MCP server, your AI assistant can:
+---
 
-- Look up configuration options by name
-- Get explanations of features
-- Query live metrics from your running proxy
-- Help you write routing rules and rewrite rules
+## Proxy Embedded MCP
 
-## Running the MCP Server
+The proxy exposes a [JSON-RPC 2.0](https://www.jsonrpc.org/specification) MCP endpoint at:
 
-```bash
-cd docs
-npm install
-npm run mcp
+```
+POST http://<dashboard-host>:<dashboard-port>/mcp
 ```
 
-The MCP server runs on `http://localhost:3333` by default.
+It is enabled automatically whenever the dashboard is enabled. Authentication uses the same `username` / `password` configured for the dashboard (HTTP Basic when set).
 
-Configure the port:
+### Connecting
 
-```bash
-MCP_PORT=4000 npm run mcp
-```
-
-To connect it to a live TurbineProxy instance:
-
-```bash
-TURBINEPROXY_API=http://localhost:8080 npm run mcp
-```
-
-## VS Code / GitHub Copilot Integration
-
-Add to your `.vscode/mcp.json`:
+**VS Code `mcp.json`:**
 
 ```json
 {
   "servers": {
     "turbineproxy": {
       "type": "http",
-      "url": "http://localhost:3333/mcp"
+      "url": "http://localhost:8080/mcp"
     }
   }
 }
 ```
 
-Or add to your VS Code `settings.json`:
+**Claude Desktop (`claude_desktop_config.json`):**
+
+```json
+{
+  "mcpServers": {
+    "turbineproxy": {
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+**VS Code `settings.json`:**
 
 ```json
 {
@@ -60,69 +56,138 @@ Or add to your VS Code `settings.json`:
     "servers": {
       "turbineproxy": {
         "type": "http",
-        "url": "http://localhost:3333/mcp"
+        "url": "http://localhost:8080/mcp"
       }
     }
   }
 }
 ```
 
-After adding, you can ask Copilot questions like:
+### Available Tools
 
-> "What does `read_your_own_writes_ms` do in TurbineProxy?"
-> "Write a routing rule to send all queries from user `analytics` to replica 2"
-> "What are the current slow queries on my proxy?"
+#### `get_pool_stats`
 
-## Available Tools
+Returns connection pool utilisation for every backend.
 
-The MCP server exposes the following tools:
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": { "name": "get_pool_stats", "arguments": {} } }
+```
 
-### `search_docs`
+**Response fields per backend:** `addr`, `role` (primary/replica), `idle`, `in_use`, `pool_size`, `created`, `evicted`.
 
-Search the TurbineProxy documentation.
+#### `get_slow_queries`
 
-**Input:** `query` (string)
+Returns the top slow queries sorted by p99 latency.
 
-**Example:** `search_docs("connection pool eviction")`
+**Arguments:** `limit` (integer, default 20)
 
-### `get_config_option`
+**Response fields per query:** `fingerprint`, `count`, `p50_ms`, `p95_ms`, `p99_ms`, `max_ms`, `last_seen`.
 
-Get detailed information about a specific configuration key.
+#### `get_n1_candidates`
 
-**Input:** `key` (string)
+Returns queries flagged as N+1 patterns — the same fingerprint executed many times with different parameters in a short window.
 
-**Example:** `get_config_option("max_replica_lag_ms")`
+**Response fields:** `fingerprint`, `call_count`, `distinct_params`, `pattern_score`, `last_seen`.
 
-### `list_config_sections`
+#### `get_index_advice`
 
-List all top-level configuration sections.
+Returns index recommendations generated from background `EXPLAIN` analysis of slow queries.
 
-### `get_live_stats`
+**Response fields:** `table`, `column`, `query_sample`, `estimated_rows`, `suggestion`, `created_at`.
 
-Fetch current metrics from a running TurbineProxy instance.
+#### `get_backend_health`
 
-**Requires:** `TURBINEPROXY_API` environment variable set.
+Returns the current health state of every configured backend.
 
-### `get_slow_queries`
+**Response fields:** `addr`, `role`, `healthy`, `lag_ms`, `consecutive_failures`, `last_check`.
 
-Fetch the current slow query list from a running proxy.
+#### `get_query_rules`
 
-**Requires:** `TURBINEPROXY_API` environment variable set.
+Returns all active routing rules with live hit counters.
 
-### `get_backends`
+**Response fields:** `match_pattern`, `match_digest`, `user`, `schema`, `destination`, `cache_ttl_secs`, `hit_count`, `last_match_secs`, `comment`.
 
-Fetch current backend health status.
+#### `get_rewrite_rules`
 
-**Requires:** `TURBINEPROXY_API` environment variable set.
+Returns all active rewrite rules with live hit counters.
 
-## Claude Desktop Integration
+**Response fields:** `match_pattern`, `operation` (replace/add_limit/add_timeout/block), `hit_count`, `last_match_secs`, `comment`.
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+### Protocol
+
+The endpoint implements a subset of the MCP specification sufficient for tool listing and tool calling:
+
+```jsonc
+// List tools
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} }
+
+// Call a tool
+{
+  "jsonrpc": "2.0", "id": 2,
+  "method": "tools/call",
+  "params": { "name": "get_slow_queries", "arguments": { "limit": 10 } }
+}
+```
+
+All responses follow JSON-RPC 2.0. Errors return a standard `error` object with `code` and `message`.
+
+### Example AI Prompts
+
+Once connected, ask your assistant:
+
+> "Which queries are causing the most replica lag right now?"
+
+> "Are any backends unhealthy or lagging?"
+
+> "Show me the top 5 slowest queries and suggest indexes for them."
+
+> "What routing rules are active and how many times has each one fired?"
+
+---
+
+## Docs MCP (Documentation Server)
+
+The docs MCP server indexes the TurbineProxy documentation and exposes search and lookup tools. It is useful for AI-assisted config authoring without needing a running proxy.
+
+### Running
+
+```bash
+cd docs
+npm install
+npm run mcp
+# Listening on http://localhost:3333
+```
+
+Configure port and optional live proxy connection:
+
+```bash
+MCP_PORT=4000 TURBINEPROXY_API=http://localhost:8080 npm run mcp
+```
+
+When `TURBINEPROXY_API` is set, the docs MCP also proxies `get_slow_queries`, `get_backends`, and `get_live_stats` to the running proxy.
+
+### Connecting
+
+**VS Code `mcp.json`:**
+
+```json
+{
+  "servers": {
+    "turbineproxy-docs": {
+      "type": "http",
+      "url": "http://localhost:3333/mcp"
+    }
+  }
+}
+```
+
+**Claude Desktop:**
 
 ```json
 {
   "mcpServers": {
-    "turbineproxy": {
+    "turbineproxy-docs": {
       "command": "node",
       "args": ["/path/to/turbineproxy/docs/mcp-server/index.js"],
       "env": {
@@ -132,3 +197,41 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   }
 }
 ```
+
+### Available Tools
+
+#### `search_docs`
+
+Full-text search across all documentation pages.
+
+**Input:** `query` (string)
+
+#### `get_config_option`
+
+Detailed description of a specific configuration key.
+
+**Input:** `key` (string) — e.g. `"max_replica_lag_ms"`
+
+#### `list_config_sections`
+
+List all top-level configuration sections with brief descriptions.
+
+#### `get_live_stats`
+
+Fetch current metrics from the connected proxy (requires `TURBINEPROXY_API`).
+
+#### `get_slow_queries`
+
+Fetch current slow queries from the connected proxy (requires `TURBINEPROXY_API`).
+
+#### `get_backends`
+
+Fetch current backend health from the connected proxy (requires `TURBINEPROXY_API`).
+
+### Example Prompts
+
+> "What does `read_your_own_writes_ms` do?"
+
+> "Write a routing rule to send all queries from user `analytics` to replica 2."
+
+> "What compression algorithms does TurbineProxy support?"

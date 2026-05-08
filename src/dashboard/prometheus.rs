@@ -184,6 +184,16 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
         .ok();
     }
 
+    // ── turbineproxy_sqli_blocked_total ─────────────────────────────────────
+    out.push_str("\n# HELP turbineproxy_sqli_blocked_total Total queries blocked by the SQL injection protection filter.\n");
+    out.push_str("# TYPE turbineproxy_sqli_blocked_total counter\n");
+    writeln!(
+        out,
+        "turbineproxy_sqli_blocked_total {}",
+        metrics.sqli_blocked.load(Ordering::Relaxed)
+    )
+    .ok();
+
     out
 }
 

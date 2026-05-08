@@ -405,6 +405,8 @@ impl Router {
                             bytes: cached,
                             affected_rows: None,
                             is_error: false,
+                            session_changes: vec![],
+                            write_gtid: None,
                         });
                     }
                 }
@@ -452,6 +454,8 @@ impl Router {
                     bytes: cached,
                     affected_rows: None,
                     is_error: false,
+                    session_changes: vec![],
+                    write_gtid: None,
                 });
             }
         }
@@ -717,6 +721,95 @@ impl Router {
             }
             Err(e) => Err(e),
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // ─── Fast-forward mode ────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Send SQL directly to the primary backend, skipping all routing logic
+    /// (rewriting, query rules, cache, RYOW, replica selection, fingerprinting).
+    ///
+    /// Used by the `fast_forward = true` code-path in `handle_connection`.  The
+    /// caller is responsible for tracking transaction state and passing
+    /// `in_transaction` correctly; connection management still uses the shared
+    /// pool so idle-timeout eviction and pool-size limits apply as normal.
+    pub async fn route_fast(
+        &self,
+        sql: &[u8],
+        tx_conn: &mut Option<Box<dyn BackendConnection>>,
+        in_transaction: bool,
+    ) -> anyhow::Result<BackendResponse> {
+        let pool = self.pool.read().await.clone();
+        if in_transaction {
+            // Acquire a sticky primary connection if we don't have one yet.
+            if tx_conn.is_none() {
+                *tx_conn = Some(pool.get_primary().await?);
+            }
+            return tx_conn
+                .as_mut()
+                .unwrap()
+                .execute_query(sql)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e));
+        }
+        // Non-transactional: borrow a connection, execute, return to pool.
+        let mut conn = pool.get_primary().await?;
+        let resp = conn
+            .execute_query(sql)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        pool.put_primary(conn).await;
+        Ok(resp)
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // ─── GTID-aware RYOW ─────────────────────────────────────────────────────
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Check whether *any* available replica has applied `write_gtid`.
+    ///
+    /// Issues `SELECT GTID_SUBSET(?, @@global.gtid_executed)` (non-blocking) on
+    /// one replica from the pool.  Returns `true` when the replica is up-to-date
+    /// and the read can safely be routed there; `false` when the replica is
+    /// lagging or when the pool has no healthy replicas (fall back to primary).
+    ///
+    /// Errors are treated as `false` (safe fallback).
+    pub async fn check_replica_has_gtid(&self, write_gtid: &str) -> bool {
+        let pool = self.pool.read().await.clone();
+        // If no replicas are configured, there's nothing to check.
+        if pool.replicas.is_empty() {
+            return false;
+        }
+        // Get a replica connection for the GTID check.
+        let result: anyhow::Result<bool> = (async {
+            let (mut conn, idx) = pool.get_replica_for_database(None).await?;
+            // Use GTID_SUBSET to check without blocking: returns 1 when
+            // write_gtid is a subset of the replica's executed GTID set.
+            let sql = format!(
+                "SELECT GTID_SUBSET('{}', @@global.gtid_executed)",
+                write_gtid.replace('\'', "''") // minimal escaping for single-quotes in GTID
+            );
+            let resp = conn
+                .execute_query(sql.as_bytes())
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            pool.put_replica_for_database(conn, idx, None).await;
+            // A successful result-set response (not an ERR packet) contains a
+            // result row.  The first data row starts at byte 9+ in the raw buffer.
+            // We look for the byte '1' (0x31) anywhere after the column definition.
+            // This is a fast-path heuristic; it works for the 1-column/1-row response
+            // that GTID_SUBSET returns.
+            if resp.is_error {
+                return Ok(false);
+            }
+            // Search for a row containing "1" (GTID_SUBSET = 1 = replica up-to-date).
+            // Row data packets start after column-count + N column defs + EOF.
+            // For a simple 1-column result, the first row data starts around byte 20.
+            Ok(resp.bytes.windows(1).any(|b| b == b"1"))
+        })
+        .await;
+        result.unwrap_or(false)
     }
 
     // ──────────────────────────────────────────────────────────────────────────

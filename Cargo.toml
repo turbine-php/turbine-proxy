@@ -28,6 +28,7 @@ rand = "0.9"
 
 # Compression (MySQL protocol)
 flate2 = "1"
+zstd = "0.13"
 
 # Serialization & Config
 serde = { version = "1", features = ["derive"] }

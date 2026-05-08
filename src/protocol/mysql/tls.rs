@@ -14,6 +14,55 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::config::{FrontendTlsConfig, TlsMode};
 
+// ── FileKeyLog ────────────────────────────────────────────────────────────────────────
+
+/// TLS session key logger — writes secrets in NSS Key Log Format so that
+/// Wireshark (or any `SSLKEYLOGFILE`-aware tool) can decrypt TLS traffic.
+///
+/// Format per line:  `{LABEL} {client_random_hex} {secret_hex}`
+///
+/// Reference: <https://www.ietf.org/archive/id/draft-thomson-tls-keylogfile-00.txt>
+///
+/// **Security warning**: this file exposes the plaintext of every TLS
+/// session. Protect it like a private key; disable in production.
+#[derive(Debug)]
+struct FileKeyLog {
+    path: String,
+}
+
+impl FileKeyLog {
+    fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl rustls::KeyLog for FileKeyLog {
+    fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
+        use std::io::Write;
+        let line = format!("{} {} {}\n", label, to_hex(client_random), to_hex(secret));
+        match fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.path)
+        {
+            Ok(mut f) => {
+                let _ = f.write_all(line.as_bytes());
+            }
+            Err(e) => log::warn!("[tls] ssl_keylog_file '{}': {}", self.path, e),
+        }
+    }
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            use std::fmt::Write;
+            let _ = write!(s, "{:02x}", b);
+            s
+        })
+}
+
 // ─── NoVerify ────────────────────────────────────────────────────────────────
 
 /// A certificate verifier that accepts any server certificate.
@@ -79,12 +128,16 @@ impl rustls::client::danger::ServerCertVerifier for NoVerify {
 /// | `verify-ca`      | Verify against `tls_ca` or Mozilla root store          |
 /// | `verify-identity`| Verify cert **and** hostname                           |
 ///
+/// `keylog_path` — when non-empty, TLS session secrets are written to that
+/// file in NSS Key Log Format (see `FileKeyLog` above).
+///
 /// Panics if called with `TlsMode::Off`.
 pub fn build_backend_connector(
     tls_mode: &TlsMode,
     tls_ca: Option<&str>,
+    keylog_path: Option<&str>,
 ) -> anyhow::Result<TlsConnector> {
-    let client_config: ClientConfig = match tls_mode {
+    let mut client_config: ClientConfig = match tls_mode {
         TlsMode::Off => unreachable!("build_backend_connector called with TlsMode::Off"),
 
         TlsMode::Required => {
@@ -122,12 +175,20 @@ pub fn build_backend_connector(
         }
     };
 
+    // NSS Key Log for proxy→backend TLS debugging.
+    if let Some(path) = keylog_path.filter(|p| !p.is_empty()) {
+        log::info!("[tls] backend SSL key log enabled → {}", path);
+        client_config.key_log = Arc::new(FileKeyLog::new(path));
+    }
+
     Ok(TlsConnector::from(Arc::new(client_config)))
 }
 
 /// Build a `TlsAcceptor` for frontend (incoming) TLS connections.
 ///
 /// `cert` must be a path to a PEM certificate chain; `key` a PEM private key.
+/// When `config.ssl_keylog_file` is non-empty, TLS session secrets are written
+/// to that file in NSS Key Log Format for Wireshark decryption.
 pub fn build_frontend_acceptor(config: &FrontendTlsConfig) -> anyhow::Result<TlsAcceptor> {
     if config.cert.is_empty() || config.key.is_empty() {
         anyhow::bail!("frontend_tls.cert and frontend_tls.key must both be set when frontend_tls.enabled = true");
@@ -149,10 +210,19 @@ pub fn build_frontend_acceptor(config: &FrontendTlsConfig) -> anyhow::Result<Tls
             .ok_or_else(|| anyhow::anyhow!("No private key found in '{}'", config.key))?
     };
 
-    let server_config = ServerConfig::builder()
+    let mut server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, private_key)
         .map_err(|e| anyhow::anyhow!("Invalid TLS cert/key: {}", e))?;
+
+    // NSS Key Log for client→proxy TLS debugging.
+    if !config.ssl_keylog_file.is_empty() {
+        log::info!(
+            "[tls] frontend SSL key log enabled → {}",
+            config.ssl_keylog_file
+        );
+        server_config.key_log = Arc::new(FileKeyLog::new(&config.ssl_keylog_file));
+    }
 
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }

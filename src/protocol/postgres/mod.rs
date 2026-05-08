@@ -378,6 +378,7 @@ impl DatabaseProtocol for PostgreSQLProtocol {
                 let connector = crate::protocol::mysql::tls::build_backend_connector(
                     &config.tls_mode,
                     config.tls_ca.as_deref(),
+                    Some(&config.ssl_keylog_file),
                 )
                 .map_err(|e| ProtocolError::AuthFailed(e.to_string()))?;
 
@@ -765,6 +766,8 @@ impl PgBackendConnection {
             bytes: all,
             affected_rows: affected,
             is_error: is_err,
+            session_changes: vec![],
+            write_gtid: None,
         })
     }
 }

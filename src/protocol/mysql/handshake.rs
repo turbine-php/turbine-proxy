@@ -29,6 +29,8 @@ pub mod capability {
     pub const PLUGIN_AUTH_LENENC_CLIENT_DATA: u32 = 1 << 21;
     pub const CLIENT_SESSION_TRACK: u32 = 1 << 23;
     pub const DEPRECATE_EOF: u32 = 1 << 24;
+    /// MySQL 8.0.18+ zstd compression algorithm capability.
+    pub const ZSTD_COMPRESSION_ALGORITHM: u32 = 1 << 26;
 }
 
 pub struct HandshakeV10 {

@@ -400,6 +400,8 @@ impl ProxyServer {
             let max_transaction_time_ms = self.config.max_transaction_time_ms;
             let max_transaction_idle_ms = self.config.max_transaction_idle_ms;
             let read_your_own_writes_ms = self.config.read_your_own_writes_ms;
+            let gtid_aware_ryow = self.config.gtid_aware_ryow;
+            let fast_forward = self.config.fast_forward;
             let select_version_forwarding = self.config.select_version_forwarding;
             let sqli_detector = self.sqli_detector.clone();
             let query_whitelist = self.query_whitelist.clone();
@@ -430,6 +432,8 @@ impl ProxyServer {
                     max_transaction_time_ms,
                     max_transaction_idle_ms,
                     read_your_own_writes_ms,
+                    gtid_aware_ryow,
+                    fast_forward,
                     select_version_forwarding,
                     sqli_detector,
                     query_whitelist,
@@ -492,6 +496,8 @@ async fn handle_connection(
     max_transaction_time_ms: u64,
     max_transaction_idle_ms: u64,
     read_your_own_writes_ms: u64,
+    gtid_aware_ryow: bool,
+    fast_forward: bool,
     select_version_forwarding: bool,
     sqli_detector: Option<Arc<InjectionDetector>>,
     query_whitelist: Arc<QueryWhitelist>,
@@ -563,6 +569,10 @@ async fn handle_connection(
     // Read-Your-Own-Writes: after a write, route reads to primary until this instant.
     // None means RYOW is not active (reads go to replica as normal).
     let mut ryow_until: Option<Instant> = None;
+    // GTID-aware RYOW: the last GTID position returned by a successful write.
+    // When `gtid_aware_ryow` is enabled, the proxy checks replicas for this GTID
+    // before routing reads there, rather than using the time-based window.
+    let mut last_write_gtid: Option<String> = None;
     let mut query_tracker = SessionQueryTracker::new(conn_id, n1_store);
     // Per-session transaction trace accumulator (None when not in a transaction).
     let mut active_trace: Option<ActiveTrace> = None;
@@ -657,6 +667,50 @@ async fn handle_connection(
             Command::Query(sql_bytes) => {
                 let sql = std::str::from_utf8(&sql_bytes).unwrap_or("");
                 let in_tx = session.is_in_transaction();
+
+                // ── FAST-FORWARD: bypass routing/analytics/security overhead ────────────
+                // When enabled, every COM_QUERY is forwarded directly to the
+                // primary with no fingerprinting, rewriting, rules, cache, RYOW,
+                // N+1 detection, or audit logging.  Only basic transaction state
+                // (BEGIN/COMMIT/ROLLBACK) is tracked to keep sticky connections
+                // correct.  Metrics.queries_total is still incremented.
+                if fast_forward {
+                    let upper = sql.trim().to_ascii_uppercase();
+                    let tx_was = in_tx; // capture before any state change
+                    if upper.starts_with("BEGIN") || upper.starts_with("START ") {
+                        session.set_in_transaction(true);
+                    } else if upper.starts_with("COMMIT") || upper.starts_with("ROLLBACK") {
+                        session.set_in_transaction(false);
+                        // execute below on the existing tx_conn, then release it
+                    }
+                    metrics.queries_total.fetch_add(1, Ordering::Relaxed);
+                    let result = router.route_fast(&sql_bytes, &mut tx_conn, tx_was).await;
+                    // After COMMIT / ROLLBACK, return the sticky conn to the pool.
+                    if upper.starts_with("COMMIT") || upper.starts_with("ROLLBACK") {
+                        if let Some(conn) = tx_conn.take() {
+                            router.put_primary(conn).await;
+                        }
+                    }
+                    match result {
+                        Ok(response) => {
+                            if let Err(e) = session.write_response(&response.bytes).await {
+                                log::debug!("[ff] write error: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if let Err(we) = session.write_error("1", &e.to_string()).await {
+                                log::debug!("[ff] write error packet failed: {}", we);
+                            }
+                        }
+                    }
+                    if let Err(e) = session.flush().await {
+                        log::debug!("[ff] flush error: {}", e);
+                        break;
+                    }
+                    continue;
+                }
+
                 let intent = classify(sql);
                 let was_read = matches!(intent, QueryIntent::Read) && !in_tx;
 
@@ -666,8 +720,27 @@ async fn handle_connection(
                         ryow_until = None;
                     }
                 }
-                // Force primary for reads during the RYOW window.
-                let ryow_active = ryow_until.is_some();
+                // GTID-aware RYOW: if enabled and we have a pending write GTID,
+                // check whether any replica has applied it.  If yes, clear the GTID
+                // (reads may use replicas freely).  If no, force primary.
+                let gtid_ryow_force_primary = if gtid_aware_ryow && was_read {
+                    if let Some(ref gtid) = last_write_gtid {
+                        let replica_ready = router.check_replica_has_gtid(gtid).await;
+                        if replica_ready {
+                            last_write_gtid = None;
+                            false // replica is up-to-date
+                        } else {
+                            true // replica lagging — force primary
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                // Force primary for reads during the time-based RYOW window OR
+                // when GTID-aware check says replica is not ready.
+                let ryow_active = ryow_until.is_some() || gtid_ryow_force_primary;
 
                 metrics.queries_total.fetch_add(1, Ordering::Relaxed);
                 let t0 = Instant::now();
@@ -1009,8 +1082,8 @@ async fn handle_connection(
                 // Read-Your-Own-Writes: set/extend the RYOW window after a successful write.
                 if !is_error
                     && !was_read
-                    && read_your_own_writes_ms > 0
                     && matches!(intent, QueryIntent::Write)
+                    && read_your_own_writes_ms > 0
                 {
                     ryow_until = Some(
                         Instant::now() + std::time::Duration::from_millis(read_your_own_writes_ms),
@@ -1024,6 +1097,40 @@ async fn handle_connection(
                     Ok(response) => {
                         consecutive_errors = 0;
                         error_window_start = None;
+                        // ── GTID-aware RYOW: capture write GTID from OK packet ────────
+                        if gtid_aware_ryow && !was_read && !response.is_error {
+                            if let Some(ref gtid) = response.write_gtid {
+                                if !gtid.is_empty() {
+                                    last_write_gtid = Some(gtid.clone());
+                                    log::debug!(
+                                        "[conn {}] GTID captured after write: {}",
+                                        conn_id,
+                                        gtid
+                                    );
+                                }
+                            }
+                        }
+                        // ── Session-track: capture variable changes from OK packets ───
+                        // When MySQL `session_track_system_variables='*'` is active on the
+                        // backend, changes inside stored procedures / triggers arrive here.
+                        // We convert each to a SET statement and add it to session_init_sqls
+                        // so the next backend connection re-applies them.
+                        if !response.session_changes.is_empty() {
+                            for (name, value) in &response.session_changes {
+                                let set_stmt = format!("SET SESSION {}={:?}", name, value);
+                                if !session_init_sqls.contains(&set_stmt) {
+                                    session_init_sqls.push(set_stmt);
+                                    if !user_var_sticky {
+                                        user_var_sticky = true;
+                                    }
+                                }
+                            }
+                            log::debug!(
+                                "[conn {}] session-track: {} variable change(s) captured",
+                                conn_id,
+                                response.session_changes.len()
+                            );
+                        }
                         if let Err(e) = session.write_response(&response.bytes).await {
                             log::debug!("Write response error: {}", e);
                             break;

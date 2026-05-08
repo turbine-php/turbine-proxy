@@ -184,6 +184,44 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub log_prepared_params: bool,
 
+    /// Session-variable tracking mode.
+    ///
+    /// When set to `optional` or `enforced`, TurbineProxy negotiates MySQL
+    /// `session_track_system_variables = '*'` on every backend connection so that
+    /// variable changes inside stored procedures and triggers are detected and
+    /// replayed on the next connection — preventing silent session-state corruption
+    /// during multiplexing.  Default: `disabled`.
+    #[serde(default)]
+    pub session_track_mode: SessionTrackMode,
+
+    /// GTID-aware Read-Your-Own-Writes.
+    ///
+    /// When `true`, after a write the proxy extracts the GTID position reported by
+    /// the backend via `SESSION_TRACK_GTIDS` (MySQL 5.7.6+/8.0+) and waits for a
+    /// replica to have applied it before routing subsequent reads there — instead
+    /// of the coarser time-based window (`read_your_own_writes_ms`).  Falls back
+    /// to time-based RYOW when the backend does not report GTIDs.  Default: `false`.
+    #[serde(default)]
+    pub gtid_aware_ryow: bool,
+
+    /// Fast-forward mode — minimal-overhead path for workloads that do not need
+    /// routing, rewriting, caching, or observability.
+    ///
+    /// When `true`, every `COM_QUERY` is forwarded directly to the primary
+    /// backend without fingerprinting, N+1 detection, query rules, cache, RYOW,
+    /// SQL-injection checks, or analytics recording.  Only basic transaction
+    /// state (BEGIN / COMMIT / ROLLBACK) is tracked so that sticky connections
+    /// remain correct.  Prepared statements, health-checks, and the dashboard
+    /// are unaffected.
+    ///
+    /// Typical latency savings: 5–15 µs per query on localhost benchmarks.
+    /// Recommended when `fast_forward = true`:
+    ///   - Single-primary, no replicas
+    ///   - analytics, rewriting, and query_rules all disabled / empty
+    ///   - Workloads where sub-millisecond proxy overhead matters
+    #[serde(default)]
+    pub fast_forward: bool,
+
     /// PostgreSQL proxy configuration.
     /// When `pgsql.enabled = true`, the proxy also listens on a PostgreSQL port
     /// and acts as a protocol-transparent proxy for PostgreSQL clients.
@@ -271,6 +309,15 @@ struct RawProxyConfig {
     pub log_prepared_params: bool,
 
     #[serde(default)]
+    pub session_track_mode: SessionTrackMode,
+
+    #[serde(default)]
+    pub gtid_aware_ryow: bool,
+
+    #[serde(default)]
+    pub fast_forward: bool,
+
+    #[serde(default)]
     pub pgsql: PgsqlConfig,
 }
 
@@ -342,6 +389,50 @@ pub struct QueryRuleConfig {
     pub rollout_pct: Option<u8>,
 }
 
+/// Compression mode for backend (proxy→database) connections.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BackendCompression {
+    /// No compression (default).
+    #[default]
+    None,
+    /// Standard MySQL zlib compression (`CLIENT_COMPRESS`).  Supported by all
+    /// MySQL 5.x / 8.x and MariaDB servers.
+    Zlib,
+    /// MySQL 8.0.18+ zstd compression (`CLIENT_ZSTD_COMPRESSION_ALGORITHM`).
+    /// Falls back to no compression if the server does not support it.
+    Zstd,
+}
+
+/// Controls how TurbineProxy tracks session variable changes on backend connections.
+///
+/// MySQL 5.7.1+ can report session-variable changes inside OK packet payloads
+/// (`SESSION_TRACK_SYSTEM_VARIABLES`, `SESSION_TRACK_STATE_CHANGE`).  Enabling
+/// this lets the proxy detect variables changed inside stored procedures, triggers,
+/// and prepared statements — not just explicit `SET` statements — and replay
+/// them on the next backend connection, preventing silent session-state corruption
+/// during multiplexing.
+///
+/// ProxySQL added this in v3.0.8 (issue #5166).  TurbineProxy implements it here.
+///
+/// - `disabled` (default): only `SET` statement parsing; behaviour identical to
+///   older proxy versions.
+/// - `optional`: negotiate `session_track_system_variables` on backend connect;
+///   gracefully fall back if the server does not support it.
+/// - `enforced`: same as `optional` but fail the backend connection if the
+///   server refuses to enable session tracking.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionTrackMode {
+    /// Disabled — only SET-parsing (default, backward-compatible).
+    #[default]
+    Disabled,
+    /// Enable session tracking; ignore errors if the server doesn't support it.
+    Optional,
+    /// Enable session tracking; fail if the server doesn't support it.
+    Enforced,
+}
+
 /// TLS mode for backend connections.
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -407,12 +498,30 @@ pub struct BackendConfig {
     #[serde(default)]
     pub init_connect: Vec<String>,
 
+    /// Protocol-level compression for this backend connection.
+    ///
+    /// `none` (default) — no compression; `zlib` — standard MySQL compressed
+    /// protocol (CLIENT_COMPRESS, supported by all MySQL 5.x/8.x and MariaDB);
+    /// `zstd` — MySQL 8.0.18+ zstd compression (CLIENT_ZSTD_COMPRESSION_ALGORITHM).
+    /// Reduces CPU cost vs zlib, especially useful for WAN/cloud deployments.
+    /// The proxy negotiates the best algorithm the server supports and falls back
+    /// to no compression if the server does not advertise the requested capability.
+    #[serde(default)]
+    pub compression: BackendCompression,
+
     /// Address family to use when resolving backend hostnames.
     /// `"system"` (default) — let the OS choose (normal DNS resolution).
     /// `"ipv4"` — force IPv4; `"ipv6"` — force IPv6.
     /// Prevents IPv4↔IPv6 flapping on dual-stack networks (AWS, GCP).
     #[serde(default = "default_resolution_family")]
     pub resolution_family: String,
+
+    /// Write TLS session secrets to this file in NSS Key Log Format.
+    /// Applies to outgoing (proxy→backend) TLS connections for this backend.
+    /// Empty string (default) disables key logging.
+    /// See `frontend_tls.ssl_keylog_file` for the client→proxy direction.
+    #[serde(default)]
+    pub ssl_keylog_file: String,
 }
 
 /// Per-user proxy access configuration.
@@ -473,6 +582,18 @@ pub struct FrontendTlsConfig {
     /// Path to a PEM-encoded server private key.
     #[serde(default)]
     pub key: String,
+
+    /// Write TLS session secrets to this file in NSS Key Log Format.
+    ///
+    /// When non-empty, every TLS session negotiated with a client will have its
+    /// master secret appended to the file, allowing tools such as Wireshark to
+    /// decrypt the traffic for debugging.  Compatible with `SSLKEYLOGFILE`.
+    ///
+    /// **Security warning**: this file exposes the plaintext of all TLS
+    /// sessions.  Only use in controlled environments; never enable in
+    /// production with real user data.
+    #[serde(default)]
+    pub ssl_keylog_file: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -952,6 +1073,9 @@ impl ProxyConfig {
             client_error_limit: raw.client_error_limit,
             client_error_window_secs: raw.client_error_window_secs,
             log_prepared_params: raw.log_prepared_params,
+            session_track_mode: raw.session_track_mode,
+            gtid_aware_ryow: raw.gtid_aware_ryow,
+            fast_forward: raw.fast_forward,
             pgsql: raw.pgsql,
         })
     }

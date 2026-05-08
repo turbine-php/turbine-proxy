@@ -46,13 +46,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
-use crate::config::{BackendConfig, TlsMode};
+use crate::config::{BackendCompression, BackendConfig, TlsMode};
 use crate::protocol::{
     BackendConnection, BackendResponse, ClientAuthConfig, ClientSession, Command, DatabaseProtocol,
     ProtocolError,
 };
 use crate::proxy::auth_cache::AuthCache;
 use handshake::{HandshakeResponse41, HandshakeV10};
+use packet::{CompressAlgo, MysqlCompressedReader};
 
 /// Type aliases for boxed async streams — avoids repeating the bounds everywhere.
 type BoxRead = Box<dyn AsyncRead + Send + Sync + Unpin>;
@@ -281,6 +282,8 @@ impl DatabaseProtocol for MySQLProtocol {
             &config.tls_mode,
             config.tls_ca.as_deref(),
             &config.resolution_family,
+            &config.compression,
+            Some(&config.ssl_keylog_file),
         )
         .await?;
         Ok(Box::new(conn))
@@ -394,6 +397,10 @@ pub struct MySQLBackendConnection {
     /// The MySQL thread ID returned by the server during handshake.
     /// Used by the proxy to issue `KILL QUERY <id>` when a query exceeds the timeout.
     pub backend_conn_id: u32,
+    /// Whether `session_track_system_variables='*'` was successfully negotiated.
+    /// When true, OK packet responses may carry session-state change payloads.
+    #[allow(dead_code)]
+    pub session_tracking_enabled: bool,
 }
 
 #[async_trait]
@@ -405,29 +412,39 @@ impl BackendConnection for MySQLBackendConnection {
         packet.extend_from_slice(sql);
 
         self.codec.reset_sequence();
-        self.codec.write_packet(&mut self.writer, &packet).await?;
+        // Use buffered write + flush_maybe_compressed so that compression
+        // (when enabled on this connection) wraps the full packet in one go.
+        self.codec.buffer_packet(&packet)?;
+        self.codec.flush_maybe_compressed(&mut self.writer).await?;
         self.writer.flush().await?;
 
-        let bytes = collect_response(&mut self.reader).await?;
+        let (bytes, session_changes, write_gtid) =
+            collect_response_tracked(&mut self.reader).await?;
         let is_error = bytes.get(4).copied() == Some(0xFF);
         Ok(BackendResponse {
             bytes,
             affected_rows: None,
             is_error,
+            session_changes,
+            write_gtid,
         })
     }
 
     async fn send_raw(&mut self, packet: &[u8]) -> Result<BackendResponse, ProtocolError> {
         self.codec.reset_sequence();
-        self.codec.write_packet(&mut self.writer, packet).await?;
+        self.codec.buffer_packet(packet)?;
+        self.codec.flush_maybe_compressed(&mut self.writer).await?;
         self.writer.flush().await?;
 
-        let bytes = collect_response(&mut self.reader).await?;
+        let (bytes, session_changes, write_gtid) =
+            collect_response_tracked(&mut self.reader).await?;
         let is_error = bytes.get(4).copied() == Some(0xFF);
         Ok(BackendResponse {
             bytes,
             affected_rows: None,
             is_error,
+            session_changes,
+            write_gtid,
         })
     }
 
@@ -456,6 +473,7 @@ impl BackendConnection for MySQLBackendConnection {
 
 // ─── Backend connect ──────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn mysql_connect(
     addr: &str,
     user: &str,
@@ -464,6 +482,8 @@ async fn mysql_connect(
     tls_mode: &TlsMode,
     tls_ca: Option<&str>,
     resolution_family: &str,
+    compression: &BackendCompression,
+    keylog_path: Option<&str>,
 ) -> Result<MySQLBackendConnection, ProtocolError> {
     use bytes::BufMut;
     use tokio_rustls::rustls::pki_types::ServerName;
@@ -556,7 +576,7 @@ async fn mysql_connect(
             writer.flush().await?;
 
             // Build TLS connector and upgrade.
-            let connector = tls::build_backend_connector(tls_mode, tls_ca)
+            let connector = tls::build_backend_connector(tls_mode, tls_ca, keylog_path)
                 .map_err(|e| ProtocolError::AuthFailed(format!("TLS config: {}", e)))?;
 
             let host = addr.split(':').next().unwrap_or("localhost");
@@ -593,6 +613,20 @@ async fn mysql_connect(
     // (or seq 1 for plain-TCP).
     let has_db = database.is_some();
     let mut resp = bytes::BytesMut::new();
+    // Determine which compression capability to request (if any).
+    // CLIENT_ZSTD_COMPRESSION_ALGORITHM requires MySQL 8.0.18+.
+    // CLIENT_COMPRESS (zlib) is supported by all MySQL 5.x/8.x and MariaDB.
+    let compress_cap: u32 = match compression {
+        BackendCompression::Zstd if server_caps & capability::ZSTD_COMPRESSION_ALGORITHM != 0 => {
+            capability::ZSTD_COMPRESSION_ALGORITHM
+        }
+        BackendCompression::Zlib | BackendCompression::Zstd
+            if server_caps & capability::COMPRESS != 0 =>
+        {
+            capability::COMPRESS
+        }
+        _ => 0,
+    };
     let mut flags: u32 = capability::LONG_PASSWORD
         | capability::LONG_FLAG
         | capability::PROTOCOL_41
@@ -600,7 +634,9 @@ async fn mysql_connect(
         | capability::SECURE_CONNECTION
         | capability::MULTI_STATEMENTS
         | capability::MULTI_RESULTS
-        | capability::PLUGIN_AUTH;
+        | capability::PLUGIN_AUTH
+        | capability::CLIENT_SESSION_TRACK // request session-state notifications
+        | compress_cap;
     if has_db {
         flags |= capability::CONNECT_WITH_DB;
     }
@@ -631,12 +667,68 @@ async fn mysql_connect(
         )));
     }
 
+    // ── Negotiate session_track_system_variables ───────────────────────────
+    // Ask MySQL to include variable changes in every OK packet so the proxy can
+    // detect session state modifications made inside stored procedures / triggers
+    // that are not visible as explicit `SET` statements.
+    let mut session_tracking_enabled = false;
+    {
+        let track_sql =
+            b"SET SESSION session_track_system_variables='*', session_track_state_change=ON";
+        let mut pkt = Vec::with_capacity(track_sql.len() + 1);
+        pkt.push(command::COM_QUERY);
+        pkt.extend_from_slice(track_sql);
+        let mut codec2 = PacketCodec::new();
+        let _ = codec2.write_packet(&mut boxed_writer, &pkt).await;
+        let _ = boxed_writer.flush().await;
+        // Read the response — silently ignore errors (server may not support it).
+        match collect_response(&mut boxed_reader).await {
+            Ok(resp) if resp.get(4).copied() != Some(0xFF) => {
+                session_tracking_enabled = true;
+                log::debug!(
+                    "[mysql-backend] session_track_system_variables enabled on conn {}",
+                    backend_conn_id
+                );
+            }
+            _ => {
+                log::debug!("[mysql-backend] session_track_system_variables not supported, running without tracking");
+            }
+        }
+    }
+
+    // ── Enable compression on the connection (if negotiated) ───────────────
+    // After auth is complete, wrap the reader with a transparent decompressing
+    // reader and enable compressed writes in the codec.
+    let negotiated_compress_algo = if compress_cap == capability::ZSTD_COMPRESSION_ALGORITHM {
+        CompressAlgo::Zstd
+    } else if compress_cap == capability::COMPRESS {
+        CompressAlgo::Zlib
+    } else {
+        CompressAlgo::None
+    };
+    if negotiated_compress_algo != CompressAlgo::None {
+        log::debug!(
+            "[mysql-backend] compression enabled ({:?}) on conn {}",
+            negotiated_compress_algo,
+            backend_conn_id
+        );
+        boxed_reader = Box::new(MysqlCompressedReader::new(
+            boxed_reader,
+            negotiated_compress_algo,
+        ));
+    }
+    let mut final_codec = PacketCodec::new();
+    if negotiated_compress_algo != CompressAlgo::None {
+        final_codec.enable_compression(negotiated_compress_algo);
+    }
+
     Ok(MySQLBackendConnection {
         reader: boxed_reader,
         writer: boxed_writer,
-        codec: PacketCodec::new(),
+        codec: final_codec,
         in_transaction: false,
         backend_conn_id,
+        session_tracking_enabled,
     })
 }
 
@@ -735,6 +827,211 @@ pub(crate) async fn collect_response<R: AsyncReadExt + Unpin>(
     }
 
     Ok(buf)
+}
+
+/// Like `collect_response`, but additionally extracts session-state changes from
+/// OK packet payloads (MySQL `CLIENT_SESSION_TRACK` protocol extension).
+///
+/// Returns `(raw_bytes, session_changes, write_gtid)` where `session_changes` is a list of
+/// `(variable_name, new_value)` pairs and `write_gtid` is the GTID position reported
+/// via `SESSION_TRACK_GTIDS` (type `0x03`), if present.
+///
+/// Reference: https://dev.mysql.com/doc/dev/mysql-server/latest/page_protocol_basic_ok_packet.html
+pub(crate) async fn collect_response_tracked<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+) -> Result<(Vec<u8>, Vec<(String, String)>, Option<String>), ProtocolError> {
+    let mut buf = Vec::new();
+    let mut session_changes: Vec<(String, String)> = Vec::new();
+    let mut write_gtid: Option<String> = None;
+
+    loop {
+        let mut header = [0u8; 4];
+        reader.read_exact(&mut header).await?;
+        let length = u24_le(&header);
+
+        let mut payload = vec![0u8; length];
+        reader.read_exact(&mut payload).await?;
+
+        buf.extend_from_slice(&header);
+        buf.extend_from_slice(&payload);
+
+        if payload.is_empty() {
+            break;
+        }
+
+        match payload[0] {
+            0xFF => break, // ERR — terminal
+            0xFB => break, // LOCAL INFILE — terminal
+            0x00 => {
+                // OK — parse session-track section if present.
+                parse_ok_session_track(&payload, &mut session_changes, &mut write_gtid);
+                let more =
+                    ok_status_flags(&payload).is_some_and(|f| f & SERVER_MORE_RESULTS_EXISTS != 0);
+                if more {
+                    continue;
+                }
+                break;
+            }
+            _ => {
+                collect_result_set(reader, payload[0], &mut buf).await?;
+                break;
+            }
+        }
+    }
+
+    Ok((buf, session_changes, write_gtid))
+}
+
+/// Parse MySQL OK packet session-track section.
+///
+/// OK packet layout (Protocol 4.1 + CLIENT_SESSION_TRACK):
+/// ```
+/// 0x00                          // header byte
+/// lenenc(affected_rows)
+/// lenenc(last_insert_id)
+/// u16(status_flags)
+/// u16(warnings)
+/// [if SESSION_TRACK set in status_flags:]
+///   lenenc(session_state_len)
+///   [repeating:]
+///     u8(type)                  // track type
+///     lenenc(data_len)
+///     <data>                    // type-specific
+/// ```
+///
+/// Types handled:
+/// - `0x00` = SESSION_TRACK_SYSTEM_VARIABLES: `lenenc(name) lenenc(value)` pairs.
+/// - `0x02` = SESSION_TRACK_STATE_CHANGE: single byte `0x31` ('1') = state changed.
+/// - `0x03` = SESSION_TRACK_GTIDS: encoding byte + lenenc GTID set text.
+fn parse_ok_session_track(
+    payload: &[u8],
+    out: &mut Vec<(String, String)>,
+    gtid_out: &mut Option<String>,
+) {
+    const SERVER_SESSION_STATE_CHANGED: u16 = 0x4000;
+    const SESSION_TRACK_SYSTEM_VARIABLES: u8 = 0x00;
+    const SESSION_TRACK_GTIDS: u8 = 0x03;
+
+    if payload.first().copied() != Some(0x00) {
+        return;
+    }
+    let mut pos = 1usize;
+
+    // Skip affected_rows (lenenc)
+    let (_, n) = read_lenenc(&payload[pos..]);
+    pos += n;
+    if pos >= payload.len() {
+        return;
+    }
+
+    // Skip last_insert_id (lenenc)
+    let (_, n) = read_lenenc(&payload[pos..]);
+    pos += n;
+    if pos + 4 > payload.len() {
+        return;
+    }
+
+    let status_flags = u16::from_le_bytes([payload[pos], payload[pos + 1]]);
+    pos += 2;
+    // skip warnings
+    pos += 2;
+
+    if status_flags & SERVER_SESSION_STATE_CHANGED == 0 {
+        return;
+    }
+
+    // Read session state block.
+    if pos >= payload.len() {
+        return;
+    }
+    let (session_len, n) = read_lenenc(&payload[pos..]);
+    pos += n;
+    let end = pos + session_len;
+    if end > payload.len() {
+        return;
+    }
+
+    while pos < end {
+        if pos >= payload.len() {
+            break;
+        }
+        let track_type = payload[pos];
+        pos += 1;
+        if pos >= payload.len() {
+            break;
+        }
+        let (data_len, n) = read_lenenc(&payload[pos..]);
+        pos += n;
+        let data_end = pos + data_len;
+        if data_end > payload.len() {
+            break;
+        }
+
+        if track_type == SESSION_TRACK_SYSTEM_VARIABLES {
+            let mut dp = pos;
+            while dp < data_end {
+                let (name_len, n) = read_lenenc(&payload[dp..]);
+                dp += n;
+                if dp + name_len > data_end {
+                    break;
+                }
+                let name = String::from_utf8_lossy(&payload[dp..dp + name_len]).into_owned();
+                dp += name_len;
+
+                let (val_len, n) = read_lenenc(&payload[dp..]);
+                dp += n;
+                if dp + val_len > data_end {
+                    break;
+                }
+                let value = String::from_utf8_lossy(&payload[dp..dp + val_len]).into_owned();
+                dp += val_len;
+
+                out.push((name, value));
+            }
+        } else if track_type == SESSION_TRACK_GTIDS {
+            // Layout: 1-byte encoding spec (0 = UTF-8 text) + lenenc + GTID-set string.
+            let mut dp = pos;
+            if dp < data_end {
+                dp += 1; // skip encoding byte
+                let (gtid_len, n) = read_lenenc(&payload[dp..]);
+                dp += n;
+                if dp + gtid_len <= data_end && gtid_len > 0 {
+                    let gtid = String::from_utf8_lossy(&payload[dp..dp + gtid_len]).into_owned();
+                    if !gtid.is_empty() {
+                        *gtid_out = Some(gtid);
+                    }
+                }
+            }
+        }
+
+        pos = data_end;
+    }
+}
+
+/// Read a MySQL length-encoded integer.  Returns `(value, bytes_consumed)`.
+/// Returns `(0, 1)` for NULL / overflow markers.
+#[inline]
+fn read_lenenc(buf: &[u8]) -> (usize, usize) {
+    if buf.is_empty() {
+        return (0, 0);
+    }
+    match buf[0] {
+        0..=250 => (buf[0] as usize, 1),
+        0xfc => {
+            if buf.len() < 3 {
+                return (0, 1);
+            }
+            (u16::from_le_bytes([buf[1], buf[2]]) as usize, 3)
+        }
+        0xfd => {
+            if buf.len() < 4 {
+                return (0, 1);
+            }
+            let v = (buf[1] as usize) | ((buf[2] as usize) << 8) | ((buf[3] as usize) << 16);
+            (v, 4)
+        }
+        _ => (0, 1), // 0xfe/0xff — not valid here
+    }
 }
 
 async fn collect_result_set<R: AsyncReadExt + Unpin>(

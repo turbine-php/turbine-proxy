@@ -28,6 +28,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Node.js and build dashboard
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          cd dashboard
+          npm ci
+          npm run build
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -40,18 +49,11 @@ jobs:
         run: cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build binary (musl static)
+        env:
+          TURBINEPROXY_SKIP_DASHBOARD_BUILD: "1"
         run: |
           cross build --release --target ${{ matrix.target }}
           ls -lh target/${{ matrix.target }}/release/turbineproxy
-
-      - name: Build frontend
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: |
-          cd dashboard
-          npm ci
-          npm run build
 
       - name: Package tarball
         run: |
@@ -91,6 +93,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Node.js and build dashboard
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          cd dashboard
+          npm ci
+          npm run build
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -100,18 +111,11 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build binary
+        env:
+          TURBINEPROXY_SKIP_DASHBOARD_BUILD: "1"
         run: |
           cargo build --release --target ${{ matrix.target }}
           ls -lh target/${{ matrix.target }}/release/turbineproxy
-
-      - name: Build frontend
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: |
-          cd dashboard
-          npm ci
-          npm run build
 
       - name: Package tarball
         run: |

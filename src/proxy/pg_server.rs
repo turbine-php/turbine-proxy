@@ -162,6 +162,7 @@ impl PgProxyServer {
                     enabled: true,
                     cert: config.ssl_cert.clone(),
                     key: config.ssl_key.clone(),
+                    ssl_keylog_file: String::new(),
                 };
                 match crate::protocol::mysql::tls::build_frontend_acceptor(&tls_cfg) {
                     Ok(acceptor) => {

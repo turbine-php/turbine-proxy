@@ -58,6 +58,14 @@ pub struct BackendResponse {
     pub bytes: Vec<u8>,
     pub affected_rows: Option<u64>,
     pub is_error: bool,
+    /// Session variable changes extracted from OK packet session-track payloads.
+    /// Each entry is `(variable_name, new_value)`.  Empty when session tracking
+    /// is not negotiated or the OK packet carries no changes.
+    pub session_changes: Vec<(String, String)>,
+    /// GTID position reported by the backend in the OK packet via
+    /// `SESSION_TRACK_GTIDS` (type `0x03`).  Present only on write responses when
+    /// GTID mode is enabled on the server.  Used for GTID-aware RYOW.
+    pub write_gtid: Option<String>,
 }
 
 // ─── DatabaseProtocol ─────────────────────────────────────────────────────────

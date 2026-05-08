@@ -4,6 +4,7 @@
 //! In development, the Vite dev server (port 5173) proxies /api/* here.
 
 pub mod grafana;
+pub mod mcp;
 pub mod prometheus;
 pub mod routes;
 pub mod routes_config;
@@ -103,6 +104,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/login", post(routes::login))
         // Cluster sync — uses Bearer secret auth, not session tokens.
         .route("/api/sync", post(routes::cluster_sync))
+        // MCP server — Model Context Protocol for AI assistant integration.
+        .route("/mcp", post(mcp::handle_mcp))
         .with_state(state.clone());
 
     // Protected API endpoints
