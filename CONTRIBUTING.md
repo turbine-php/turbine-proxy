@@ -98,4 +98,4 @@ tests/           # Integration & cluster tests
 ## License
 
 By contributing you agree that your contributions will be licensed under
-the same [MIT OR Apache-2.0](LICENSE-MIT) terms as the project.
+the same [Apache-2.0](LICENSE-APACHE) terms as the project.

@@ -3,7 +3,7 @@
 [![CI](https://github.com/turbineproxy/turbineproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/turbineproxy/turbineproxy/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/turbineproxy/turbineproxy/branch/main/graph/badge.svg)](https://codecov.io/gh/turbineproxy/turbineproxy)
 [![Crates.io](https://img.shields.io/crates/v/turbineproxy.svg)](https://crates.io/crates/turbineproxy)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE-APACHE)
 
 **High-performance MySQL & PostgreSQL proxy** with connection pooling, automatic read/write splitting, query analytics, and an embedded dashboard.
 
@@ -145,4 +145,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: see [SECURITY.md](SECUR
 
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Licensed under [Apache-2.0](LICENSE-APACHE).

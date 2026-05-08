@@ -3,7 +3,7 @@ name = "turbineproxy"
 version = "0.1.0"
 edition = "2021"
 description = "Intelligent MySQL proxy with read/write splitting, query analytics, and automatic index advice"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 
 [dependencies]
 # Async runtime
@@ -78,7 +78,7 @@ harness = false
 name = "turbineproxy"
 maintainer = "TurbineProxy Contributors"
 copyright = "2024 TurbineProxy Contributors"
-license-file = ["LICENSE-MIT", "4"]
+license-file = ["LICENSE-APACHE", "4"]
 extended-description = """\
 TurbineProxy is an intelligent MySQL proxy with read/write splitting,
 query analytics, Prometheus metrics, and automatic index advice."""
@@ -104,7 +104,7 @@ conf-files = ["/etc/turbineproxy/turbineproxy.example.toml"]
 [package.metadata.generate-rpm]
 name = "turbineproxy"
 summary = "Intelligent MySQL proxy with analytics and Prometheus metrics"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 assets = [
   { source = "target/x86_64-unknown-linux-musl/release/turbineproxy", dest = "/usr/bin/turbineproxy", mode = "0755" },
   { source = "dashboard/dist/", dest = "/usr/share/turbineproxy/dashboard/dist/", mode = "0644" },
