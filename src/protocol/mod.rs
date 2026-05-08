@@ -73,10 +73,7 @@ pub trait DatabaseProtocol: Send + Sync + 'static {
     ) -> Result<Box<dyn ClientSession>>;
 
     /// Open an authenticated connection to a backend.
-    async fn connect_backend(
-        &self,
-        config: &BackendConfig,
-    ) -> Result<Box<dyn BackendConnection>>;
+    async fn connect_backend(&self, config: &BackendConfig) -> Result<Box<dyn BackendConnection>>;
 
     #[allow(dead_code)]
     fn name(&self) -> &'static str;
@@ -105,7 +102,9 @@ pub trait ClientSession: Send + Sync {
     fn app_name(&self) -> &str;
     /// Client-selected database/schema from the initial handshake/startup.
     /// Empty string means "not provided".
-    fn database(&self) -> &str { "" }
+    fn database(&self) -> &str {
+        ""
+    }
 }
 
 // ─── BackendConnection ────────────────────────────────────────────────────────
@@ -128,7 +127,7 @@ pub trait BackendConnection: Send + Sync {
     /// Return the server-assigned connection/thread ID for this backend connection.
     /// Used to issue `KILL QUERY <id>` when a query exceeds `max_query_time_ms`.
     /// Returns `None` for backends that do not expose a thread ID (e.g. PostgreSQL stub).
-    fn backend_conn_id(&self) -> Option<u32> { None }
+    fn backend_conn_id(&self) -> Option<u32> {
+        None
+    }
 }
-
-

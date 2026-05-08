@@ -95,7 +95,7 @@ impl TracerStore {
         let buf = self.traces.lock().expect("tracer lock");
         buf.iter()
             .rev()
-            .filter(|t| fingerprint.map_or(true, |fp| t.tx_fingerprint == fp))
+            .filter(|t| fingerprint.is_none_or(|fp| t.tx_fingerprint == fp))
             .take(limit)
             .cloned()
             .collect()
@@ -152,9 +152,8 @@ impl ActiveTrace {
         backend_addr: &str,
         intent: &'static str,
     ) {
-        let started_at_ms = self.started_at_ms
-            + self.tx_start.elapsed().as_millis() as u64
-            - duration_ms as u64; // approx start of this query
+        let started_at_ms =
+            self.started_at_ms + self.tx_start.elapsed().as_millis() as u64 - duration_ms as u64; // approx start of this query
 
         const MAX_SQL: usize = 4096;
         let sql_stored = if sql.len() > MAX_SQL {

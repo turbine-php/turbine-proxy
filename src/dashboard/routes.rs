@@ -70,15 +70,36 @@ pub async fn login(
     if state.dashboard_username.is_empty() || state.dashboard_password.is_empty() {
         let token = Uuid::new_v4().to_string();
         state.tokens.lock().unwrap().insert(token.clone());
-        return (StatusCode::OK, Json(LoginResponse { ok: true, token: Some(token), message: None }));
+        return (
+            StatusCode::OK,
+            Json(LoginResponse {
+                ok: true,
+                token: Some(token),
+                message: None,
+            }),
+        );
     }
 
     if body.username == state.dashboard_username && body.password == state.dashboard_password {
         let token = Uuid::new_v4().to_string();
         state.tokens.lock().unwrap().insert(token.clone());
-        (StatusCode::OK, Json(LoginResponse { ok: true, token: Some(token), message: None }))
+        (
+            StatusCode::OK,
+            Json(LoginResponse {
+                ok: true,
+                token: Some(token),
+                message: None,
+            }),
+        )
     } else {
-        (StatusCode::UNAUTHORIZED, Json(LoginResponse { ok: false, token: None, message: Some("Invalid credentials".into()) }))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(LoginResponse {
+                ok: false,
+                token: None,
+                message: Some("Invalid credentials".into()),
+            }),
+        )
     }
 }
 
@@ -107,12 +128,23 @@ pub struct HealthResponse {
 
 pub async fn health(State(state): State<AppState>) -> impl axum::response::IntoResponse {
     use axum::http::StatusCode;
-    let resp = if state.draining.load(Ordering::Relaxed) {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(HealthResponse { status: "draining", version: env!("CARGO_PKG_VERSION") }))
+    if state.draining.load(Ordering::Relaxed) {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "draining",
+                version: env!("CARGO_PKG_VERSION"),
+            }),
+        )
     } else {
-        (StatusCode::OK, Json(HealthResponse { status: "ok", version: env!("CARGO_PKG_VERSION") }))
-    };
-    resp
+        (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: "ok",
+                version: env!("CARGO_PKG_VERSION"),
+            }),
+        )
+    }
 }
 
 // ── /api/stats ───────────────────────────────────────────────────────────────
@@ -249,6 +281,7 @@ fn max_last_seen(a: Option<String>, b: Option<String>) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn upsert_acc(
     acc: &mut HashMap<String, QueryAccum>,
     fingerprint: String,
@@ -477,10 +510,10 @@ pub async fn user_stats(State(state): State<AppState>) -> Json<Vec<UserStatRow>>
             .map(|(username, stats)| UserStatRow {
                 username,
                 connections_active: stats.connections_active,
-                connections_total:  stats.connections_total,
-                queries_total:      stats.queries_total,
-                last_seen:          stats.last_seen,
-                allow_writes:       stats.allow_writes,
+                connections_total: stats.connections_total,
+                queries_total: stats.queries_total,
+                last_seen: stats.last_seen,
+                allow_writes: stats.allow_writes,
             })
             .collect(),
     )
@@ -488,12 +521,12 @@ pub async fn user_stats(State(state): State<AppState>) -> Json<Vec<UserStatRow>>
 
 #[derive(serde::Serialize)]
 pub struct UserStatRow {
-    pub username:            String,
-    pub connections_active:  usize,
-    pub connections_total:   usize,
-    pub queries_total:       usize,
-    pub last_seen:           Option<String>,
-    pub allow_writes:        bool,
+    pub username: String,
+    pub connections_active: usize,
+    pub connections_total: usize,
+    pub queries_total: usize,
+    pub last_seen: Option<String>,
+    pub allow_writes: bool,
 }
 
 // ── /api/query-rules ─────────────────────────────────────────────────────────
@@ -546,7 +579,11 @@ pub async fn reload_config(State(state): State<AppState>) -> Json<ReloadResponse
             // Push rules reload to cluster peers.
             if !state.cluster.peers.is_empty() && !state.cluster.secret.is_empty() {
                 let toml_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-                push_config_to_peers(state.cluster.peers.clone(), state.cluster.secret.clone(), toml_text);
+                push_config_to_peers(
+                    state.cluster.peers.clone(),
+                    state.cluster.secret.clone(),
+                    toml_text,
+                );
             }
 
             "query_rules and rewrite_rules reloaded".to_string()
@@ -567,13 +604,16 @@ pub async fn reload_backends(State(state): State<AppState>) -> Json<ReloadRespon
     let result: anyhow::Result<crate::config::ProxyConfig> = (|| {
         let text = std::fs::read_to_string(config_path)
             .map_err(|e| anyhow::anyhow!("read {}: {}", config_path, e))?;
-        let cfg: crate::config::ProxyConfig = toml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("parse {}: {}", config_path, e))?;
+        let cfg: crate::config::ProxyConfig =
+            toml::from_str(&text).map_err(|e| anyhow::anyhow!("parse {}: {}", config_path, e))?;
         Ok(cfg)
     })();
 
     match result {
-        Err(e) => Json(ReloadResponse { ok: false, message: format!("config read error: {}", e) }),
+        Err(e) => Json(ReloadResponse {
+            ok: false,
+            message: format!("config read error: {}", e),
+        }),
         Ok(new_cfg) => {
             let primary_addr = new_cfg.primary.addr.clone();
             let replica_count = new_cfg.replicas.len();
@@ -585,7 +625,9 @@ pub async fn reload_backends(State(state): State<AppState>) -> Json<ReloadRespon
             let idle_timeout = if new_cfg.connection_max_idle_secs == 0 {
                 None
             } else {
-                Some(std::time::Duration::from_secs(new_cfg.connection_max_idle_secs))
+                Some(std::time::Duration::from_secs(
+                    new_cfg.connection_max_idle_secs,
+                ))
             };
             let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
                 &new_cfg.primary,
@@ -601,19 +643,32 @@ pub async fn reload_backends(State(state): State<AppState>) -> Json<ReloadRespon
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            state.last_reload_secs.store(now, std::sync::atomic::Ordering::Relaxed);
+            state
+                .last_reload_secs
+                .store(now, std::sync::atomic::Ordering::Relaxed);
 
-            log::info!("[reload] backends reloaded: primary={} replicas={}", primary_addr, replica_count);
+            log::info!(
+                "[reload] backends reloaded: primary={} replicas={}",
+                primary_addr,
+                replica_count
+            );
 
             // Push to cluster peers (fire-and-forget; failures are logged, not returned).
             if !state.cluster.peers.is_empty() && !state.cluster.secret.is_empty() {
                 let toml_text = std::fs::read_to_string(&state.config_path).unwrap_or_default();
-                push_config_to_peers(state.cluster.peers.clone(), state.cluster.secret.clone(), toml_text);
+                push_config_to_peers(
+                    state.cluster.peers.clone(),
+                    state.cluster.secret.clone(),
+                    toml_text,
+                );
             }
 
             Json(ReloadResponse {
                 ok: true,
-                message: format!("backends reloaded — primary={} replicas={}", primary_addr, replica_count),
+                message: format!(
+                    "backends reloaded — primary={} replicas={}",
+                    primary_addr, replica_count
+                ),
             })
         }
     }
@@ -665,7 +720,9 @@ pub async fn cluster_sync(
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"ok": false, "message": format!("config parse error: {}", e)})),
+                Json(
+                    serde_json::json!({"ok": false, "message": format!("config parse error: {}", e)}),
+                ),
             );
         }
     };
@@ -678,7 +735,9 @@ pub async fn cluster_sync(
     let idle_timeout = if new_cfg.connection_max_idle_secs == 0 {
         None
     } else {
-        Some(std::time::Duration::from_secs(new_cfg.connection_max_idle_secs))
+        Some(std::time::Duration::from_secs(
+            new_cfg.connection_max_idle_secs,
+        ))
     };
     let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
         &new_cfg.primary,
@@ -697,7 +756,8 @@ pub async fn cluster_sync(
 
     log::info!(
         "[cluster] sync applied from peer — primary={} replicas={}",
-        primary_addr, replica_count,
+        primary_addr,
+        replica_count,
     );
 
     let pg_enabled = state.pg_pool.is_some();
@@ -721,11 +781,7 @@ pub async fn cluster_sync(
 
 /// Fire-and-forget: push the current config TOML to all configured peers.
 /// Failures are logged but never propagate to the caller.
-pub fn push_config_to_peers(
-    peers: Vec<String>,
-    secret: String,
-    config_toml: String,
-) {
+pub fn push_config_to_peers(peers: Vec<String>, secret: String, config_toml: String) {
     if peers.is_empty() || secret.is_empty() {
         return;
     }
@@ -746,10 +802,7 @@ pub fn push_config_to_peers(
                 .post(&url)
                 .header("Authorization", format!("Bearer {}", secret))
                 .header("Content-Type", "application/json")
-                .body(
-                    serde_json::json!({"config_toml": config_toml})
-                        .to_string()
-                )
+                .body(serde_json::json!({"config_toml": config_toml}).to_string())
                 .send()
                 .await
             {
@@ -759,7 +812,8 @@ pub fn push_config_to_peers(
                 Ok(resp) => {
                     log::warn!(
                         "[cluster] peer {} rejected sync — status {}",
-                        peer, resp.status(),
+                        peer,
+                        resp.status(),
                     );
                 }
                 Err(e) => {
@@ -838,22 +892,33 @@ pub async fn cluster_state(
 
     let mysql_view = async {
         let members = state.pool.gr_members.lock().await.clone();
-        let mode = if members.is_empty() { "standalone" } else { "group_replication" };
+        let mode = if members.is_empty() {
+            "standalone"
+        } else {
+            "group_replication"
+        };
         let primary_addr = members
             .iter()
             .find(|m| m.role == "PRIMARY" && m.state == "ONLINE")
             .map(|m| m.addr.clone())
             .or_else(|| Some(state.pool.primary_addr()));
         let failover_active = state.pool.failover_idx.load(Ordering::Relaxed) >= 0;
-        let members = members.into_iter().map(|m| ClusterMemberView {
-            addr: m.addr,
-            role: m.role,
-            state: m.state,
-            version: if m.version.is_empty() { None } else { Some(m.version) },
-            healthy: None,
-            lag_ms: None,
-            consecutive_failures: None,
-        }).collect();
+        let members = members
+            .into_iter()
+            .map(|m| ClusterMemberView {
+                addr: m.addr,
+                role: m.role,
+                state: m.state,
+                version: if m.version.is_empty() {
+                    None
+                } else {
+                    Some(m.version)
+                },
+                healthy: None,
+                lag_ms: None,
+                consecutive_failures: None,
+            })
+            .collect();
 
         ClusterProtocolView {
             protocol: "mysql",
@@ -878,15 +943,26 @@ pub async fn cluster_state(
                 "standalone"
             };
 
-            let members = backends.into_iter().map(|b| ClusterMemberView {
-                addr: b.addr,
-                role: b.role.to_uppercase(),
-                state: if b.healthy { "ONLINE".to_string() } else { "UNHEALTHY".to_string() },
-                version: None,
-                healthy: Some(b.healthy),
-                lag_ms: if b.role == "replica" { Some(b.lag_ms) } else { None },
-                consecutive_failures: Some(b.consecutive_failures),
-            }).collect();
+            let members = backends
+                .into_iter()
+                .map(|b| ClusterMemberView {
+                    addr: b.addr,
+                    role: b.role.to_uppercase(),
+                    state: if b.healthy {
+                        "ONLINE".to_string()
+                    } else {
+                        "UNHEALTHY".to_string()
+                    },
+                    version: None,
+                    healthy: Some(b.healthy),
+                    lag_ms: if b.role == "replica" {
+                        Some(b.lag_ms)
+                    } else {
+                        None
+                    },
+                    consecutive_failures: Some(b.consecutive_failures),
+                })
+                .collect();
 
             ClusterProtocolView {
                 protocol: "pgsql",
@@ -957,18 +1033,29 @@ pub async fn cluster_action(
         let timeout = std::time::Duration::from_secs(3);
 
         let primary_ok = tokio::time::timeout(timeout, async {
-            match pool.primary.protocol.connect_backend(&pool.primary.config).await {
+            match pool
+                .primary
+                .protocol
+                .connect_backend(&pool.primary.config)
+                .await
+            {
                 Ok(mut conn) => conn.ping().await.is_ok(),
                 Err(_) => false,
             }
-        }).await.unwrap_or(false);
+        })
+        .await
+        .unwrap_or(false);
 
         if primary_ok {
             pool.primary_health.healthy.store(true, Ordering::Relaxed);
-            pool.primary_health.consecutive_failures.store(0, Ordering::Relaxed);
+            pool.primary_health
+                .consecutive_failures
+                .store(0, Ordering::Relaxed);
         } else {
             pool.primary_health.healthy.store(false, Ordering::Relaxed);
-            pool.primary_health.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+            pool.primary_health
+                .consecutive_failures
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         for (i, replica) in pool.replicas.iter().enumerate() {
@@ -977,14 +1064,24 @@ pub async fn cluster_action(
                     Ok(mut conn) => conn.ping().await.is_ok(),
                     Err(_) => false,
                 }
-            }).await.unwrap_or(false);
+            })
+            .await
+            .unwrap_or(false);
 
             if ok {
-                pool.replica_health[i].healthy.store(true, Ordering::Relaxed);
-                pool.replica_health[i].consecutive_failures.store(0, Ordering::Relaxed);
+                pool.replica_health[i]
+                    .healthy
+                    .store(true, Ordering::Relaxed);
+                pool.replica_health[i]
+                    .consecutive_failures
+                    .store(0, Ordering::Relaxed);
             } else {
-                pool.replica_health[i].healthy.store(false, Ordering::Relaxed);
-                pool.replica_health[i].consecutive_failures.fetch_add(1, Ordering::Relaxed);
+                pool.replica_health[i]
+                    .healthy
+                    .store(false, Ordering::Relaxed);
+                pool.replica_health[i]
+                    .consecutive_failures
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -996,19 +1093,23 @@ pub async fn cluster_action(
         // Safety guard: refuse to failover if the primary is still healthy
         // unless the caller explicitly sets force = true.
         if !force && pool.primary_health.healthy.load(Ordering::Relaxed) {
-            return Err(
-                "primary is currently healthy — set force:true to override".to_string()
-            );
+            return Err("primary is currently healthy — set force:true to override".to_string());
         }
 
-        let candidate = pool.replicas.iter().enumerate()
+        let candidate = pool
+            .replicas
+            .iter()
+            .enumerate()
             .filter(|(i, _)| pool.replica_health[*i].healthy.load(Ordering::Relaxed))
             .min_by_key(|(i, _)| pool.replica_health[*i].lag_ms.load(Ordering::Relaxed));
 
         match candidate {
             Some((idx, r)) => {
                 pool.failover_idx.store(idx as i64, Ordering::Relaxed);
-                Ok(format!("failover set to replica [{}] {}", idx, r.config.addr))
+                Ok(format!(
+                    "failover set to replica [{}] {}",
+                    idx, r.config.addr
+                ))
             }
             None => Err("no healthy replica available for failover".to_string()),
         }
@@ -1030,10 +1131,12 @@ pub async fn cluster_action(
                 pool.failover_idx.store(-1, Ordering::Relaxed);
                 "failover cleared".to_string()
             }
-            _ => return Json(serde_json::json!({
-                "ok": false,
-                "error": "invalid action (use recheck_health, trigger_failover, clear_failover)",
-            })),
+            _ => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "invalid action (use recheck_health, trigger_failover, clear_failover)",
+                }))
+            }
         }
     } else {
         let Some(router) = state.pg_proxy_router.clone() else {
@@ -1053,10 +1156,12 @@ pub async fn cluster_action(
                 pool.failover_idx.store(-1, Ordering::Relaxed);
                 "failover cleared".to_string()
             }
-            _ => return Json(serde_json::json!({
-                "ok": false,
-                "error": "invalid action (use recheck_health, trigger_failover, clear_failover)",
-            })),
+            _ => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "invalid action (use recheck_health, trigger_failover, clear_failover)",
+                }))
+            }
         }
     };
 
@@ -1124,7 +1229,10 @@ pub async fn transactions(
         .into_iter()
         .map(|(fingerprint, count)| FingerprintStat { fingerprint, count })
         .collect();
-    Json(TransactionsResponse { traces, fingerprints })
+    Json(TransactionsResponse {
+        traces,
+        fingerprints,
+    })
 }
 
 // ── /api/analytics ───────────────────────────────────────────────────────────
@@ -1132,8 +1240,8 @@ pub async fn transactions(
 #[derive(Serialize)]
 pub struct AnalyticsResponse {
     users: Vec<crate::proxy::app_analytics::DimEntry>,
-    ips:   Vec<crate::proxy::app_analytics::DimEntry>,
-    apps:  Vec<crate::proxy::app_analytics::DimEntry>,
+    ips: Vec<crate::proxy::app_analytics::DimEntry>,
+    apps: Vec<crate::proxy::app_analytics::DimEntry>,
 }
 
 pub async fn analytics(State(state): State<AppState>) -> Json<AnalyticsResponse> {
@@ -1147,7 +1255,9 @@ pub async fn analytics(State(state): State<AppState>) -> Json<AnalyticsResponse>
 
 // ── /api/heatmap ─────────────────────────────────────────────────────────────
 
-pub async fn heatmap(State(state): State<AppState>) -> Json<crate::proxy::heatmap::HeatmapSnapshot> {
+pub async fn heatmap(
+    State(state): State<AppState>,
+) -> Json<crate::proxy::heatmap::HeatmapSnapshot> {
     Json(state.heatmap.snapshot())
 }
 // ── /api/timeseries ────────────────────────────────────────────────────────────────────────
@@ -1160,8 +1270,12 @@ pub struct TimeseriesQuery {
     limit: usize,
 }
 
-fn default_ts_resolution() -> String { "1h".to_string() }
-fn default_ts_limit() -> usize { 168 }
+fn default_ts_resolution() -> String {
+    "1h".to_string()
+}
+fn default_ts_limit() -> usize {
+    168
+}
 
 #[derive(Serialize)]
 pub struct TimeseriesResponse {
@@ -1198,9 +1312,7 @@ pub async fn regressions(
 /// Reset the rolling query/error counters shown on the Overview dashboard.
 /// Useful after maintenance windows to start fresh baselines.
 /// Does NOT reset connection counters (connections_total, connections_active).
-pub async fn flush_stats(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+pub async fn flush_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
     let m = &state.metrics;
     m.queries_total.store(0, Ordering::Relaxed);
     m.queries_read.store(0, Ordering::Relaxed);
@@ -1216,9 +1328,7 @@ pub async fn flush_stats(
 
 /// Return information about the configured frontend TLS certificate.
 /// Returns `{ "enabled": false }` when TLS is not configured.
-pub async fn tls_cert_info(
-    State(state): State<AppState>,
-) -> Json<serde_json::Value> {
+pub async fn tls_cert_info(State(state): State<AppState>) -> Json<serde_json::Value> {
     let config = state.proxy_config.read().unwrap();
     let tls = &config.frontend_tls;
     if !tls.enabled || tls.cert.is_empty() {

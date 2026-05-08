@@ -125,7 +125,7 @@ impl AuthConfig {
                 || self
                     .sha256_stage2
                     .as_ref()
-                    .map_or(false, |s| verify_sha256(challenge, token, s))
+                    .is_some_and(|s| verify_sha256(challenge, token, s))
         } else {
             true
         }
@@ -140,6 +140,6 @@ impl AuthConfig {
         }
         self.sha256_stage2
             .as_ref()
-            .map_or(false, |s| verify_sha256(challenge, token, s))
+            .is_some_and(|s| verify_sha256(challenge, token, s))
     }
 }

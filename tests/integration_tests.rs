@@ -100,6 +100,7 @@ fn ensure_proxy() -> bool {
     })
 }
 
+#[allow(clippy::zombie_processes)]
 fn start_proxy() -> ProxyProcess {
     let mut config = NamedTempFile::new().expect("create temp config file");
     write!(
@@ -151,7 +152,10 @@ enabled = false
             .db_name(Some(TEST_DB));
         if Conn::new(opts).is_ok() {
             eprintln!("proxy ready after ~{}ms", (attempt + 1) * 200);
-            return ProxyProcess { _child: child, _config: config };
+            return ProxyProcess {
+                _child: child,
+                _config: config,
+            };
         }
     }
     panic!("TurbineProxy did not become ready within 10 s");
@@ -171,7 +175,8 @@ fn proxy_conn() -> Conn {
 
 /// Drops and recreates a table for test isolation.
 fn reset_table(conn: &mut Conn, name: &str, ddl: &str) {
-    conn.query_drop(format!("DROP TABLE IF EXISTS `{name}`")).unwrap();
+    conn.query_drop(format!("DROP TABLE IF EXISTS `{name}`"))
+        .unwrap();
     conn.query_drop(ddl).unwrap();
 }
 
@@ -210,7 +215,8 @@ fn test_show_databases() {
     let mut c = proxy_conn();
     let dbs: Vec<String> = c.query("SHOW DATABASES").unwrap();
     assert!(
-        dbs.iter().any(|d| d.eq_ignore_ascii_case("information_schema")),
+        dbs.iter()
+            .any(|d| d.eq_ignore_ascii_case("information_schema")),
         "information_schema not found in: {dbs:?}"
     );
 }
@@ -234,7 +240,8 @@ fn test_insert_select() {
         "it_basic",
         "CREATE TABLE `it_basic` (id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(64)) ENGINE=InnoDB",
     );
-    c.query_drop("INSERT INTO `it_basic` (val) VALUES ('hello'), ('world')").unwrap();
+    c.query_drop("INSERT INTO `it_basic` (val) VALUES ('hello'), ('world')")
+        .unwrap();
     let rows: Vec<String> = c.query("SELECT val FROM `it_basic` ORDER BY id").unwrap();
     assert_eq!(rows, vec!["hello", "world"]);
 }
@@ -248,8 +255,10 @@ fn test_update() {
         "it_update",
         "CREATE TABLE `it_update` (id INT, val INT) ENGINE=InnoDB",
     );
-    c.query_drop("INSERT INTO `it_update` VALUES (1, 10), (2, 20)").unwrap();
-    c.query_drop("UPDATE `it_update` SET val = val + 1 WHERE id = 1").unwrap();
+    c.query_drop("INSERT INTO `it_update` VALUES (1, 10), (2, 20)")
+        .unwrap();
+    c.query_drop("UPDATE `it_update` SET val = val + 1 WHERE id = 1")
+        .unwrap();
     let val: Vec<i32> = c.query("SELECT val FROM `it_update` WHERE id = 1").unwrap();
     assert_eq!(val, vec![11]);
 }
@@ -263,8 +272,10 @@ fn test_delete() {
         "it_delete",
         "CREATE TABLE `it_delete` (id INT) ENGINE=InnoDB",
     );
-    c.query_drop("INSERT INTO `it_delete` VALUES (1), (2), (3)").unwrap();
-    c.query_drop("DELETE FROM `it_delete` WHERE id = 2").unwrap();
+    c.query_drop("INSERT INTO `it_delete` VALUES (1), (2), (3)")
+        .unwrap();
+    c.query_drop("DELETE FROM `it_delete` WHERE id = 2")
+        .unwrap();
     let rows: Vec<i32> = c.query("SELECT id FROM `it_delete` ORDER BY id").unwrap();
     assert_eq!(rows, vec![1, 3]);
 }
@@ -281,7 +292,8 @@ fn test_transaction_commit() {
         "CREATE TABLE `it_txn_commit` (id INT) ENGINE=InnoDB",
     );
     c.query_drop("START TRANSACTION").unwrap();
-    c.query_drop("INSERT INTO `it_txn_commit` VALUES (42)").unwrap();
+    c.query_drop("INSERT INTO `it_txn_commit` VALUES (42)")
+        .unwrap();
     c.query_drop("COMMIT").unwrap();
     let rows: Vec<i32> = c.query("SELECT id FROM `it_txn_commit`").unwrap();
     assert_eq!(rows, vec![42]);
@@ -297,7 +309,8 @@ fn test_transaction_rollback() {
         "CREATE TABLE `it_txn_rollback` (id INT) ENGINE=InnoDB",
     );
     c.query_drop("START TRANSACTION").unwrap();
-    c.query_drop("INSERT INTO `it_txn_rollback` VALUES (99)").unwrap();
+    c.query_drop("INSERT INTO `it_txn_rollback` VALUES (99)")
+        .unwrap();
     c.query_drop("ROLLBACK").unwrap();
     let rows: Vec<i32> = c.query("SELECT id FROM `it_txn_rollback`").unwrap();
     assert!(rows.is_empty(), "ROLLBACK should have removed the row");
@@ -315,10 +328,19 @@ fn test_prepared_insert_select() {
         "it_prep",
         "CREATE TABLE `it_prep` (id INT, name VARCHAR(64)) ENGINE=InnoDB",
     );
-    c.exec_drop("INSERT INTO `it_prep` (id, name) VALUES (?, ?)", (1_i32, "Alice")).unwrap();
-    c.exec_drop("INSERT INTO `it_prep` (id, name) VALUES (?, ?)", (2_i32, "Bob")).unwrap();
-    let names: Vec<String> =
-        c.exec("SELECT name FROM `it_prep` WHERE id = ?", (1_i32,)).unwrap();
+    c.exec_drop(
+        "INSERT INTO `it_prep` (id, name) VALUES (?, ?)",
+        (1_i32, "Alice"),
+    )
+    .unwrap();
+    c.exec_drop(
+        "INSERT INTO `it_prep` (id, name) VALUES (?, ?)",
+        (2_i32, "Bob"),
+    )
+    .unwrap();
+    let names: Vec<String> = c
+        .exec("SELECT name FROM `it_prep` WHERE id = ?", (1_i32,))
+        .unwrap();
     assert_eq!(names, vec!["Alice"]);
 }
 
@@ -331,9 +353,14 @@ fn test_prepared_multiple_params() {
         "it_prep2",
         "CREATE TABLE `it_prep2` (a INT, b INT, c INT) ENGINE=InnoDB",
     );
-    c.exec_drop("INSERT INTO `it_prep2` VALUES (?, ?, ?)", (10_i32, 20_i32, 30_i32)).unwrap();
-    let row: Option<(i32, i32, i32)> =
-        c.exec_first("SELECT a, b, c FROM `it_prep2` WHERE a = ?", (10_i32,)).unwrap();
+    c.exec_drop(
+        "INSERT INTO `it_prep2` VALUES (?, ?, ?)",
+        (10_i32, 20_i32, 30_i32),
+    )
+    .unwrap();
+    let row: Option<(i32, i32, i32)> = c
+        .exec_first("SELECT a, b, c FROM `it_prep2` WHERE a = ?", (10_i32,))
+        .unwrap();
     assert_eq!(row, Some((10, 20, 30)));
 }
 
@@ -372,9 +399,11 @@ fn test_utf8mb4_emoji() {
          (id INT, val VARCHAR(128) CHARACTER SET utf8mb4) ENGINE=InnoDB",
     );
     let emoji = "Hello 🎉 World 🦀 Rust";
-    c.exec_drop("INSERT INTO `it_unicode` (id, val) VALUES (1, ?)", (emoji,)).unwrap();
-    let result: Option<String> =
-        c.exec_first("SELECT val FROM `it_unicode` WHERE id = 1", ()).unwrap();
+    c.exec_drop("INSERT INTO `it_unicode` (id, val) VALUES (1, ?)", (emoji,))
+        .unwrap();
+    let result: Option<String> = c
+        .exec_first("SELECT val FROM `it_unicode` WHERE id = 1", ())
+        .unwrap();
     assert_eq!(result.as_deref(), Some(emoji), "emoji round-trip failed");
 }
 
@@ -390,9 +419,11 @@ fn test_utf8mb4_cjk() {
          (id INT, val VARCHAR(128) CHARACTER SET utf8mb4) ENGINE=InnoDB",
     );
     let cjk = "日本語テスト 中文测试 한국어";
-    c.exec_drop("INSERT INTO `it_cjk` (id, val) VALUES (1, ?)", (cjk,)).unwrap();
-    let result: Option<String> =
-        c.exec_first("SELECT val FROM `it_cjk` WHERE id = 1", ()).unwrap();
+    c.exec_drop("INSERT INTO `it_cjk` (id, val) VALUES (1, ?)", (cjk,))
+        .unwrap();
+    let result: Option<String> = c
+        .exec_first("SELECT val FROM `it_cjk` WHERE id = 1", ())
+        .unwrap();
     assert_eq!(result.as_deref(), Some(cjk));
 }
 
@@ -407,13 +438,16 @@ fn test_null_column() {
         "it_null",
         "CREATE TABLE `it_null` (id INT, val VARCHAR(64)) ENGINE=InnoDB",
     );
-    c.query_drop("INSERT INTO `it_null` (id, val) VALUES (1, NULL), (2, 'present')").unwrap();
+    c.query_drop("INSERT INTO `it_null` (id, val) VALUES (1, NULL), (2, 'present')")
+        .unwrap();
     // Verify NULL row exists and non-NULL row has correct value.
-    let null_count: Vec<i64> =
-        c.query("SELECT COUNT(*) FROM `it_null` WHERE val IS NULL").unwrap();
+    let null_count: Vec<i64> = c
+        .query("SELECT COUNT(*) FROM `it_null` WHERE val IS NULL")
+        .unwrap();
     assert_eq!(null_count[0], 1);
-    let nonnull: Vec<String> =
-        c.query("SELECT val FROM `it_null` WHERE val IS NOT NULL").unwrap();
+    let nonnull: Vec<String> = c
+        .query("SELECT val FROM `it_null` WHERE val IS NOT NULL")
+        .unwrap();
     assert_eq!(nonnull, vec!["present"]);
 }
 
@@ -432,8 +466,12 @@ fn test_large_result_set() {
     let pad = "x".repeat(200);
     // 10 batches × 100 rows = 1 000 rows
     for _ in 0..10 {
-        let vals: String = (0..100).map(|_| format!("('{pad}')")).collect::<Vec<_>>().join(",");
-        c.query_drop(format!("INSERT INTO `it_large` (pad) VALUES {vals}")).unwrap();
+        let vals: String = (0..100)
+            .map(|_| format!("('{pad}')"))
+            .collect::<Vec<_>>()
+            .join(",");
+        c.query_drop(format!("INSERT INTO `it_large` (pad) VALUES {vals}"))
+            .unwrap();
     }
     let count: Vec<i64> = c.query("SELECT COUNT(*) FROM `it_large`").unwrap();
     assert_eq!(count[0], 1_000);
@@ -493,7 +531,8 @@ fn test_last_insert_id() {
         "it_lastid",
         "CREATE TABLE `it_lastid` (id INT AUTO_INCREMENT PRIMARY KEY, v INT) ENGINE=InnoDB",
     );
-    c.query_drop("INSERT INTO `it_lastid` (v) VALUES (100)").unwrap();
+    c.query_drop("INSERT INTO `it_lastid` (v) VALUES (100)")
+        .unwrap();
     let id: Vec<u64> = c.query("SELECT LAST_INSERT_ID()").unwrap();
     assert_eq!(id[0], 1, "LAST_INSERT_ID() should be 1 for first insert");
 }

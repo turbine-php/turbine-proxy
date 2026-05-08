@@ -137,7 +137,10 @@ impl RuleEngine {
             let mut guard = self.inner.write().await;
             *guard = Arc::new(compiled);
         }
-        log::info!("[rules] applied {} rule(s) from runtime config store", count);
+        log::info!(
+            "[rules] applied {} rule(s) from runtime config store",
+            count
+        );
         Ok(())
     }
 
@@ -236,7 +239,11 @@ impl RuleEngine {
                     comment: r.comment.clone(),
                     hit_count: r.hit_count.load(Ordering::Relaxed),
                     mirror_to: r.mirror_to.clone(),
-                    rollout_pct: if r.rollout_pct == 0 { None } else { Some(r.rollout_pct) },
+                    rollout_pct: if r.rollout_pct == 0 {
+                        None
+                    } else {
+                        Some(r.rollout_pct)
+                    },
                     last_match,
                 }
             })

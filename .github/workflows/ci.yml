@@ -25,6 +25,25 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  # ── Security audit ─────────────────────────────────────────────────────────
+  security:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        run: cargo audit
+      - name: npm audit (dashboard)
+        run: npm audit --audit-level=high
+        working-directory: dashboard
+      - name: npm audit (docs)
+        run: npm audit --audit-level=high
+        working-directory: docs
+
   # ── Unit / doc tests (no MySQL needed) ─────────────────────────────────────
   unit-tests:
     name: Unit tests
@@ -35,6 +54,47 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (lib + bins)
         run: cargo test --lib --bins
+
+  # ── Code coverage ──────────────────────────────────────────────────────────
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Generate coverage (unit tests only)
+        run: cargo llvm-cov --bins --lcov --output-path lcov.info
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Frontend tests (Vitest) ────────────────────────────────────────────────
+  frontend-tests:
+    name: Frontend tests (Vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        run: npm test
 
   # ── Integration tests (real MySQL / MariaDB) ────────────────────────────────
   integration-tests:

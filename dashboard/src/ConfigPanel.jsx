@@ -786,19 +786,6 @@ function ConfigHistory() {
 
   useEffect(() => { load() }, [load])
 
-  const exportConfig = async (setErrFn) => {
-    try {
-      const res = await fetch('/api/config/export', { headers: authHeaders() })
-      if (!res.ok) throw new Error(await res.text())
-      const text = await res.text()
-      const blob = new Blob([text], { type: 'text/plain' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url; a.download = 'turbineproxy.toml'
-      a.click(); URL.revokeObjectURL(url)
-    } catch (e) { if (setErrFn) setErrFn(e.message) }
-  }
-
   if (loading) return <div style={{ color: 'var(--subtext)', fontSize: 13 }}>{_('Loading…')}</div>
 
   return (

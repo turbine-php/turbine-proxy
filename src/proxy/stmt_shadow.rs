@@ -33,7 +33,7 @@ pub struct PgPipelineScan {
 
 #[derive(Debug)]
 pub struct PgParsedStmt {
-    pub name:  String,
+    pub name: String,
     pub query: String,
 }
 
@@ -43,15 +43,20 @@ pub struct PgParsedStmt {
 /// `PgClientSession::read_command` for `Command::Stmt`.
 pub fn scan_pg_pipeline(raw: &[u8]) -> PgPipelineScan {
     let mut scan = PgPipelineScan::default();
-    let mut pos  = 0;
+    let mut pos = 0;
 
     while pos + 5 <= raw.len() {
         let type_byte = raw[pos];
-        let len = u32::from_be_bytes([raw[pos+1], raw[pos+2], raw[pos+3], raw[pos+4]]) as usize;
-        if len < 4 { break; }
+        let len =
+            u32::from_be_bytes([raw[pos + 1], raw[pos + 2], raw[pos + 3], raw[pos + 4]]) as usize;
+        if len < 4 {
+            break;
+        }
         let end = pos + 1 + len;
-        if end > raw.len() { break; }
-        let payload = &raw[pos + 5 .. end];
+        if end > raw.len() {
+            break;
+        }
+        let payload = &raw[pos + 5..end];
         pos = end;
 
         match type_byte {
@@ -82,7 +87,7 @@ pub fn scan_pg_pipeline(raw: &[u8]) -> PgPipelineScan {
 
 fn read_cstr(buf: &[u8]) -> Option<(String, &[u8])> {
     let end = buf.iter().position(|&b| b == 0)?;
-    let s   = String::from_utf8_lossy(&buf[..end]).into_owned();
+    let s = String::from_utf8_lossy(&buf[..end]).into_owned();
     Some((s, &buf[end + 1..]))
 }
 
@@ -93,12 +98,14 @@ fn read_cstr(buf: &[u8]) -> Option<(String, &[u8])> {
 pub fn build_pg_reparse(name: &str, query: &str) -> Vec<u8> {
     // Parse payload: name\0 + query\0 + 0x0000 (zero explicit type OIDs)
     let mut payload = Vec::new();
-    payload.extend_from_slice(name.as_bytes());  payload.push(0);
-    payload.extend_from_slice(query.as_bytes()); payload.push(0);
-    payload.extend_from_slice(&[0u8, 0u8]);      // num_type_oids = 0
+    payload.extend_from_slice(name.as_bytes());
+    payload.push(0);
+    payload.extend_from_slice(query.as_bytes());
+    payload.push(0);
+    payload.extend_from_slice(&[0u8, 0u8]); // num_type_oids = 0
 
     let parse_len = (payload.len() + 4) as u32;
-    let mut msg   = Vec::with_capacity(5 + payload.len() + 5);
+    let mut msg = Vec::with_capacity(5 + payload.len() + 5);
     msg.push(b'P');
     msg.extend_from_slice(&parse_len.to_be_bytes());
     msg.extend_from_slice(&payload);
@@ -120,7 +127,9 @@ pub struct PgStmtShadow {
 }
 
 impl PgStmtShadow {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Update the shadow map from a pipeline scan.
     ///
@@ -138,15 +147,20 @@ impl PgStmtShadow {
     }
 
     /// Number of currently tracked named prepared statements.
-    pub fn open_count(&self) -> usize { self.stmts.len() }
+    pub fn open_count(&self) -> usize {
+        self.stmts.len()
+    }
 
     /// Returns `true` when no named prepared statements are open.
-    pub fn is_empty(&self) -> bool { self.stmts.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.stmts.is_empty()
+    }
 
     /// Build re-prepare mini-pipelines for all tracked stmts, skipping any
     /// name in `skip` (those are being prepared by the current pipeline itself).
     pub fn build_reprepare_for(&self, skip: &std::collections::HashSet<String>) -> Vec<Vec<u8>> {
-        self.stmts.iter()
+        self.stmts
+            .iter()
             .filter(|(name, _)| !skip.contains(*name))
             .map(|(name, query)| build_pg_reparse(name, query))
             .collect()
@@ -179,24 +193,37 @@ pub struct MysqlStmtInfo {
 /// use `proxy_id`; the proxy rewrites them to `backend_id` before forwarding.
 #[derive(Default)]
 pub struct MysqlStmtShadow {
-    stmts:   HashMap<u32, MysqlStmtInfo>,
+    stmts: HashMap<u32, MysqlStmtInfo>,
     next_id: u32,
 }
 
 impl MysqlStmtShadow {
-    pub fn new() -> Self { Self { stmts: HashMap::new(), next_id: 1 } }
+    pub fn new() -> Self {
+        Self {
+            stmts: HashMap::new(),
+            next_id: 1,
+        }
+    }
 
     /// Register a new prepared statement; returns the `proxy_id` to send back to the client.
     pub fn register(
         &mut self,
-        query:       Vec<u8>,
-        num_params:  u16,
+        query: Vec<u8>,
+        num_params: u16,
         num_columns: u16,
-        backend_id:  u32,
+        backend_id: u32,
     ) -> u32 {
         let proxy_id = self.next_id;
         self.next_id += 1;
-        self.stmts.insert(proxy_id, MysqlStmtInfo { query, num_params, num_columns, backend_id });
+        self.stmts.insert(
+            proxy_id,
+            MysqlStmtInfo {
+                query,
+                num_params,
+                num_columns,
+                backend_id,
+            },
+        );
         proxy_id
     }
 
@@ -217,10 +244,14 @@ impl MysqlStmtShadow {
     }
 
     /// Number of currently open prepared statements.
-    pub fn open_count(&self) -> u32 { self.stmts.len() as u32 }
+    pub fn open_count(&self) -> u32 {
+        self.stmts.len() as u32
+    }
 
     /// Returns `true` when no prepared statements are open.
-    pub fn is_empty(&self) -> bool { self.stmts.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.stmts.is_empty()
+    }
 
     /// Update backend_ids for all tracked statements after re-preparing on a new backend.
     pub fn update_backend_ids(&mut self, new_ids: &HashMap<u32, u32>) {
@@ -233,11 +264,14 @@ impl MysqlStmtShadow {
 
     /// Collect (proxy_id, prepare_packet) pairs — owned data, safe across await.
     pub fn reprepare_jobs(&self) -> Vec<(u32, Vec<u8>)> {
-        self.stmts.iter().map(|(&pid, info)| {
-            let mut prep = vec![0x16u8]; // COM_STMT_PREPARE
-            prep.extend_from_slice(&info.query);
-            (pid, prep)
-        }).collect()
+        self.stmts
+            .iter()
+            .map(|(&pid, info)| {
+                let mut prep = vec![0x16u8]; // COM_STMT_PREPARE
+                prep.extend_from_slice(&info.query);
+                (pid, prep)
+            })
+            .collect()
     }
 }
 
@@ -259,8 +293,12 @@ pub fn mysql_has_stmt_id(cmd_byte: u8) -> bool {
 
 /// Extract the 4-byte little-endian stmt_id from a `COM_STMT_*` packet.
 pub fn mysql_read_stmt_id(packet: &[u8]) -> Option<u32> {
-    if packet.len() < 5 { return None; }
-    Some(u32::from_le_bytes([packet[1], packet[2], packet[3], packet[4]]))
+    if packet.len() < 5 {
+        return None;
+    }
+    Some(u32::from_le_bytes([
+        packet[1], packet[2], packet[3], packet[4],
+    ]))
 }
 
 /// Return a copy of `packet` with the stmt_id (bytes [1..5]) replaced by `new_id`.
@@ -277,19 +315,23 @@ pub fn mysql_rewrite_stmt_id(packet: &[u8], new_id: u32) -> Vec<u8> {
 /// `response_bytes` starts with a 4-byte MySQL frame header (3-byte length + seq_id).
 /// Returns `(stmt_id, num_columns, num_params)` or `None` on error / non-OK response.
 pub fn mysql_parse_prepare_ok(response_bytes: &[u8]) -> Option<(u32, u16, u16)> {
-    let payload = response_bytes.get(4..)?;         // skip 4-byte frame header
-    if payload.first().copied() != Some(0x00) { return None; } // not OK
-    if payload.len() < 9 { return None; }
-    let stmt_id     = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+    let payload = response_bytes.get(4..)?; // skip 4-byte frame header
+    if payload.first().copied() != Some(0x00) {
+        return None;
+    } // not OK
+    if payload.len() < 9 {
+        return None;
+    }
+    let stmt_id = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
     let num_columns = u16::from_le_bytes([payload[5], payload[6]]);
-    let num_params  = u16::from_le_bytes([payload[7], payload[8]]);
+    let num_params = u16::from_le_bytes([payload[7], payload[8]]);
     Some((stmt_id, num_columns, num_params))
 }
 
 /// Rewrite the stmt_id inside a `COM_STMT_PREPARE` OK response **in-place**.
 ///
 /// Layout: frame_header(4) + status(1) + stmt_id(4) + ... → stmt_id at [5..9].
-pub fn mysql_rewrite_prepare_ok(response_bytes: &mut Vec<u8>, new_id: u32) {
+pub fn mysql_rewrite_prepare_ok(response_bytes: &mut [u8], new_id: u32) {
     if response_bytes.len() >= 9 {
         response_bytes[5..9].copy_from_slice(&new_id.to_le_bytes());
     }

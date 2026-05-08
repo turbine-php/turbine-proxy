@@ -128,6 +128,24 @@ pub fn fingerprint_with_hash(sql: &str) -> (String, u64) {
 mod tests {
     use super::*;
 
+    // ── Basic literal replacement ─────────────────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_integer() {
+        assert_eq!(
+            fingerprint("SELECT * FROM users WHERE id = 42"),
+            "SELECT * FROM users WHERE id = ?"
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_string_literal() {
+        assert_eq!(
+            fingerprint("SELECT * FROM users WHERE status = 'active'"),
+            "SELECT * FROM users WHERE status = ?"
+        );
+    }
+
     #[test]
     fn test_fingerprint_basic() {
         let sql = "SELECT * FROM users WHERE id = 42 AND status = 'active'";
@@ -147,5 +165,107 @@ mod tests {
         let sql = "SELECT * FROM t1 JOIN t2 ON t1.id = t2.t1_id";
         let fp = fingerprint(sql);
         assert_eq!(fp, "SELECT * FROM t1 JOIN t2 ON t1.id = t2.t1_id");
+    }
+
+    // ── Multiple literals ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_multiple_integers() {
+        let fp = fingerprint("SELECT * FROM t WHERE a = 1 AND b = 2 AND c = 3");
+        assert_eq!(fp, "SELECT * FROM t WHERE a = ? AND b = ? AND c = ?");
+    }
+
+    #[test]
+    fn test_fingerprint_in_list() {
+        let fp = fingerprint("SELECT * FROM t WHERE id IN (1, 2, 3, 4)");
+        assert_eq!(fp, "SELECT * FROM t WHERE id IN (?, ?, ?, ?)");
+    }
+
+    // ── Strings with escapes ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_escaped_quote_in_string() {
+        let fp = fingerprint("SELECT * FROM t WHERE name = 'O\\'Brien'");
+        assert_eq!(fp, "SELECT * FROM t WHERE name = ?");
+    }
+
+    #[test]
+    fn test_fingerprint_doubled_quote() {
+        let fp = fingerprint("SELECT * FROM t WHERE x = 'it''s'");
+        assert_eq!(fp, "SELECT * FROM t WHERE x = ?");
+    }
+
+    // ── Double-quoted identifiers (no whitespace → keep as-is) ───────────────
+
+    #[test]
+    fn test_fingerprint_double_quoted_identifier() {
+        let fp = fingerprint(r#"SELECT "id" FROM "users""#);
+        assert_eq!(fp, r#"SELECT "id" FROM "users""#);
+    }
+
+    // ── Whitespace normalization ───────────────────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_collapses_whitespace() {
+        let fp = fingerprint("SELECT  *  FROM   t  WHERE  id  =  1");
+        assert_eq!(fp, "SELECT * FROM t WHERE id = ?");
+    }
+
+    #[test]
+    fn test_fingerprint_newlines_collapsed() {
+        let fp = fingerprint("SELECT *\nFROM t\nWHERE id = 1");
+        assert_eq!(fp, "SELECT * FROM t WHERE id = ?");
+    }
+
+    // ── Numeric edge cases ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_float() {
+        let fp = fingerprint("SELECT * FROM t WHERE price > 9.99");
+        assert_eq!(fp, "SELECT * FROM t WHERE price > ?");
+    }
+
+    #[test]
+    fn test_fingerprint_negative_number() {
+        // Negative sign: `-` is a separate token, number follows
+        let fp = fingerprint("SELECT * FROM t WHERE delta = -1");
+        // The `-` passes through as-is, `1` becomes `?`
+        assert!(fp.contains('-') && fp.contains('?'));
+    }
+
+    // ── Hash consistency ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_hash_same_fingerprint() {
+        let h1 = fingerprint_hash("SELECT * FROM t WHERE id = 1");
+        let h2 = fingerprint_hash("SELECT * FROM t WHERE id = 99");
+        assert_eq!(h1, h2, "same fingerprint must produce same hash");
+    }
+
+    #[test]
+    fn test_fingerprint_hash_different_queries() {
+        let h1 = fingerprint_hash("SELECT * FROM users WHERE id = 1");
+        let h2 = fingerprint_hash("SELECT * FROM orders WHERE id = 1");
+        assert_ne!(h1, h2, "different tables must produce different hashes");
+    }
+
+    #[test]
+    fn test_fingerprint_with_hash_consistent() {
+        let (fp, hash) = fingerprint_with_hash("SELECT * FROM t WHERE id = 42");
+        assert_eq!(hash, fingerprint_hash("SELECT * FROM t WHERE id = 42"));
+        assert_eq!(fp, fingerprint("SELECT * FROM t WHERE id = 42"));
+    }
+
+    // ── Empty / trivial inputs ────────────────────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_empty() {
+        assert_eq!(fingerprint(""), "");
+    }
+
+    #[test]
+    fn test_fingerprint_no_literals() {
+        let sql = "SELECT COUNT(*) FROM t";
+        assert_eq!(fingerprint(sql), sql);
     }
 }

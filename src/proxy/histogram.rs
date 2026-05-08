@@ -11,8 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Upper bounds of the 11 finite buckets, in seconds.
 /// Chosen to cover the full range from sub-millisecond to 5-second queries.
-pub const BUCKET_BOUNDS: [f64; 11] =
-    [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
+pub const BUCKET_BOUNDS: [f64; 11] = [
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+];
 
 /// Number of buckets: 11 finite + 1 for +Inf.
 const N_BUCKETS: usize = 12;

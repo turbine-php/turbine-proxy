@@ -28,7 +28,8 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
         out,
         "turbineproxy_build_info{{version=\"{}\"}} 1",
         env!("CARGO_PKG_VERSION")
-    ).ok();
+    )
+    .ok();
 
     // ── turbineproxy_connections_total ──────────────────────────────────────
     out.push_str("\n# HELP turbineproxy_connections_total Total TCP client connections accepted since start.\n");
@@ -37,28 +38,46 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
         out,
         "turbineproxy_connections_total {}",
         metrics.connections_total.load(Ordering::Relaxed)
-    ).ok();
+    )
+    .ok();
 
     // ── turbineproxy_connections_active ────────────────────────────────────
-    out.push_str("\n# HELP turbineproxy_connections_active Number of currently open client connections.\n");
+    out.push_str(
+        "\n# HELP turbineproxy_connections_active Number of currently open client connections.\n",
+    );
     out.push_str("# TYPE turbineproxy_connections_active gauge\n");
     writeln!(
         out,
         "turbineproxy_connections_active {}",
         metrics.connections_active.load(Ordering::Relaxed)
-    ).ok();
+    )
+    .ok();
 
     // ── turbineproxy_queries_total ──────────────────────────────────────────
-    let queries_read  = metrics.queries_read.load(Ordering::Relaxed);
+    let queries_read = metrics.queries_read.load(Ordering::Relaxed);
     let queries_write = metrics.queries_write.load(Ordering::Relaxed);
     let queries_total = metrics.queries_total.load(Ordering::Relaxed);
     let queries_other = queries_total.saturating_sub(queries_read + queries_write);
 
-    out.push_str("\n# HELP turbineproxy_queries_total Total queries processed, partitioned by intent.\n");
+    out.push_str(
+        "\n# HELP turbineproxy_queries_total Total queries processed, partitioned by intent.\n",
+    );
     out.push_str("# TYPE turbineproxy_queries_total counter\n");
-    writeln!(out, "turbineproxy_queries_total{{intent=\"read\"}}  {queries_read}").ok();
-    writeln!(out, "turbineproxy_queries_total{{intent=\"write\"}} {queries_write}").ok();
-    writeln!(out, "turbineproxy_queries_total{{intent=\"other\"}} {queries_other}").ok();
+    writeln!(
+        out,
+        "turbineproxy_queries_total{{intent=\"read\"}}  {queries_read}"
+    )
+    .ok();
+    writeln!(
+        out,
+        "turbineproxy_queries_total{{intent=\"write\"}} {queries_write}"
+    )
+    .ok();
+    writeln!(
+        out,
+        "turbineproxy_queries_total{{intent=\"other\"}} {queries_other}"
+    )
+    .ok();
 
     // ── turbineproxy_query_duration_seconds (histogram) ─────────────────────
     out.push_str("\n# HELP turbineproxy_query_duration_seconds End-to-end query execution time in seconds.\n");
@@ -73,21 +92,25 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
                 out,
                 "turbineproxy_query_duration_seconds_bucket{{intent=\"{intent}\",le=\"{le}\"}} {}",
                 counts[i]
-            ).ok();
+            )
+            .ok();
         }
         writeln!(
             out,
             "turbineproxy_query_duration_seconds_bucket{{intent=\"{intent}\",le=\"+Inf\"}} {}",
             counts[11]
-        ).ok();
+        )
+        .ok();
         writeln!(
             out,
             "turbineproxy_query_duration_seconds_sum{{intent=\"{intent}\"}} {sum:.6}"
-        ).ok();
+        )
+        .ok();
         writeln!(
             out,
             "turbineproxy_query_duration_seconds_count{{intent=\"{intent}\"}} {count}"
-        ).ok();
+        )
+        .ok();
     }
 
     // ── Per-backend pool metrics ─────────────────────────────────────────────
@@ -100,12 +123,14 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
             out,
             "turbineproxy_pool_connections{{backend=\"{}\",role=\"{}\",state=\"idle\"}} {}",
             b.addr, b.role, b.idle
-        ).ok();
+        )
+        .ok();
         writeln!(
             out,
             "turbineproxy_pool_connections{{backend=\"{}\",role=\"{}\",state=\"in_use\"}} {}",
             b.addr, b.role, b.in_use
-        ).ok();
+        )
+        .ok();
     }
 
     out.push_str("\n# HELP turbineproxy_pool_connections_created_total Total backend connections ever opened.\n");
@@ -115,7 +140,8 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
             out,
             "turbineproxy_pool_connections_created_total{{backend=\"{}\",role=\"{}\"}} {}",
             b.addr, b.role, b.created
-        ).ok();
+        )
+        .ok();
     }
 
     out.push_str("\n# HELP turbineproxy_pool_connections_evicted_total Idle connections discarded (exceeded max_idle).\n");
@@ -125,7 +151,8 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
             out,
             "turbineproxy_pool_connections_evicted_total{{backend=\"{}\",role=\"{}\"}} {}",
             b.addr, b.role, b.evicted
-        ).ok();
+        )
+        .ok();
     }
 
     // ── turbineproxy_replica_lag_seconds ────────────────────────────────────
@@ -138,7 +165,8 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
                 out,
                 "turbineproxy_replica_lag_seconds{{backend=\"{}\"}} {lag_secs:.3}",
                 b.addr
-            ).ok();
+            )
+            .ok();
         }
     }
 
@@ -152,7 +180,8 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
             b.addr,
             b.role,
             if b.healthy { 1 } else { 0 }
-        ).ok();
+        )
+        .ok();
     }
 
     out

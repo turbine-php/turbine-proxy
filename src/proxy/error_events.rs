@@ -1,11 +1,13 @@
 //! In-memory ring buffer for MySQL error events (ERR_Packet captures).
 //!
 //! Errors are emitted asynchronously on the hot path — one atomic counter bump
-//! + one try_send on a bounded channel.  The collector task drains the channel
-//! and writes to SQLite.  Zero allocations when no error occurs.
+//! + one try_send on a bounded channel.
+//!
+//! The collector task drains the channel and writes to SQLite. Zero allocations
+//! when no error occurs.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -56,22 +58,24 @@ impl ErrorCategory {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorEvent {
-    pub ts:           i64,   // Unix timestamp (seconds)
-    pub code:         u16,
-    pub category:     String,
-    pub message:      String,
-    pub fingerprint:  String,
+    pub ts: i64, // Unix timestamp (seconds)
+    pub code: u16,
+    pub category: String,
+    pub message: String,
+    pub fingerprint: String,
     pub backend_addr: String,
-    pub client_ip:    String,
-    pub user:         String,
-    pub duration_ms:  f64,
+    pub client_ip: String,
+    pub user: String,
+    pub duration_ms: f64,
     /// Protocol that generated this error: `"mysql"` or `"postgres"`.
     #[serde(default = "default_protocol")]
-    pub protocol:     String,
+    pub protocol: String,
 }
 
 #[allow(dead_code)]
-fn default_protocol() -> String { "mysql".to_string() }
+fn default_protocol() -> String {
+    "mysql".to_string()
+}
 
 impl ErrorEvent {
     pub fn new(
@@ -170,8 +174,10 @@ impl ErrorEventStore {
     /// When `protocol` is `None`, returns all events.
     pub fn list_filtered(&self, limit: usize, protocol: Option<&str>) -> Vec<ErrorEvent> {
         let guard = self.events.lock().unwrap();
-        guard.iter().rev()
-            .filter(|ev| protocol.map_or(true, |p| ev.protocol == p))
+        guard
+            .iter()
+            .rev()
+            .filter(|ev| protocol.is_none_or(|p| ev.protocol == p))
             .take(limit)
             .cloned()
             .collect()
@@ -192,15 +198,20 @@ impl ErrorEventStore {
             .unwrap_or(0);
 
         let guard = self.events.lock().unwrap();
-        let mut by_cat_1h:  std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let mut by_cat_24h: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let mut by_cat_7d:  std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut by_cat_1h: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        let mut by_cat_24h: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        let mut by_cat_7d: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
         let mut filtered_total: usize = 0;
 
         // Fingerprint → (count_1h, last_seen)
-        let mut fp_counts: std::collections::HashMap<String, (usize, i64)> = std::collections::HashMap::new();
+        let mut fp_counts: std::collections::HashMap<String, (usize, i64)> =
+            std::collections::HashMap::new();
         // Error code → (count_24h, category)
-        let mut code_counts: std::collections::HashMap<u16, (usize, String)> = std::collections::HashMap::new();
+        let mut code_counts: std::collections::HashMap<u16, (usize, String)> =
+            std::collections::HashMap::new();
 
         for ev in guard.iter() {
             if protocol.is_some_and(|p| ev.protocol != p) {
@@ -209,20 +220,32 @@ impl ErrorEventStore {
             filtered_total += 1;
             let age = now - ev.ts;
             let cat = ev.category.as_str();
-            if age <= 3600  { *by_cat_1h.entry(cat).or_default()  += 1; }
-            if age <= 86400 { *by_cat_24h.entry(cat).or_default() += 1; }
-            if age <= 604800{ *by_cat_7d.entry(cat).or_default()  += 1; }
+            if age <= 3600 {
+                *by_cat_1h.entry(cat).or_default() += 1;
+            }
+            if age <= 86400 {
+                *by_cat_24h.entry(cat).or_default() += 1;
+            }
+            if age <= 604800 {
+                *by_cat_7d.entry(cat).or_default() += 1;
+            }
 
             // Top fingerprints (last 1h)
             if age <= 3600 && !ev.fingerprint.is_empty() {
-                let entry = fp_counts.entry(ev.fingerprint.clone()).or_insert((0, ev.ts));
+                let entry = fp_counts
+                    .entry(ev.fingerprint.clone())
+                    .or_insert((0, ev.ts));
                 entry.0 += 1;
-                if ev.ts > entry.1 { entry.1 = ev.ts; }
+                if ev.ts > entry.1 {
+                    entry.1 = ev.ts;
+                }
             }
 
             // Top error codes (last 24h)
             if age <= 86400 && ev.code > 0 {
-                let entry = code_counts.entry(ev.code).or_insert((0, ev.category.clone()));
+                let entry = code_counts
+                    .entry(ev.code)
+                    .or_insert((0, ev.category.clone()));
                 entry.0 += 1;
             }
         }

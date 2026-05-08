@@ -83,9 +83,9 @@ fn rt() -> tokio::runtime::Runtime {
 /// Connect directly to PostgreSQL (bypassing the proxy) to verify availability.
 fn pg_available() -> bool {
     let mut cfg = Config::new();
-    cfg.host(&pg_host())
+    cfg.host(pg_host())
         .port(pg_port())
-        .user(&pg_user())
+        .user(pg_user())
         .password(pg_pass().as_bytes())
         .dbname(TEST_DB)
         .connect_timeout(Duration::from_secs(3));
@@ -108,6 +108,7 @@ fn ensure_proxy() -> bool {
     })
 }
 
+#[allow(clippy::zombie_processes)]
 fn start_proxy() -> ProxyProcess {
     let replica_section = if let Some(rport) = pg_replica_port() {
         format!(
@@ -189,13 +190,16 @@ database = "{db}"
         let mut cfg = Config::new();
         cfg.host("127.0.0.1")
             .port(PROXY_PORT)
-            .user(&pg_user())
+            .user(pg_user())
             .password(pg_pass().as_bytes())
             .dbname(TEST_DB)
             .connect_timeout(Duration::from_secs(1));
         if rt().block_on(async { cfg.connect(NoTls).await.is_ok() }) {
             eprintln!("pg proxy ready after ~{}ms", (attempt + 1) * 200);
-            return ProxyProcess { _child: child, _config: config };
+            return ProxyProcess {
+                _child: child,
+                _config: config,
+            };
         }
     }
     panic!("TurbineProxy PgSQL did not become ready within 15 s");
@@ -208,7 +212,7 @@ async fn proxy_client() -> Client {
     let mut cfg = Config::new();
     cfg.host("127.0.0.1")
         .port(PROXY_PORT)
-        .user(&pg_user())
+        .user(pg_user())
         .password(pg_pass().as_bytes())
         .dbname(TEST_DB)
         .connect_timeout(Duration::from_secs(5));
@@ -221,11 +225,12 @@ async fn proxy_client() -> Client {
 }
 
 /// Open a direct tokio-postgres client (bypasses proxy — used to verify replica state).
+#[allow(dead_code)]
 async fn direct_client(port: u16) -> Client {
     let mut cfg = Config::new();
-    cfg.host(&pg_host())
+    cfg.host(pg_host())
         .port(port)
-        .user(&pg_user())
+        .user(pg_user())
         .password(pg_pass().as_bytes())
         .dbname(TEST_DB)
         .connect_timeout(Duration::from_secs(5));
@@ -295,10 +300,19 @@ fn pg_test_insert_select() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[]).await.unwrap();
-        c.execute("INSERT INTO it_basic (val) VALUES ($1), ($2)", &[&"hello", &"world"])
-            .await.unwrap();
-        let rows = c.query("SELECT val FROM it_basic ORDER BY id", &[]).await.unwrap();
+        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
+        c.execute(
+            "INSERT INTO it_basic (val) VALUES ($1), ($2)",
+            &[&"hello", &"world"],
+        )
+        .await
+        .unwrap();
+        let rows = c
+            .query("SELECT val FROM it_basic ORDER BY id", &[])
+            .await
+            .unwrap();
         let vals: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
         assert_eq!(vals, vec!["hello", "world"]);
     });
@@ -309,10 +323,19 @@ fn pg_test_update() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[]).await.unwrap();
-        c.execute("INSERT INTO it_txn VALUES (1, 10)", &[]).await.unwrap();
-        c.execute("UPDATE it_txn SET val = val + 1 WHERE id = 1", &[]).await.unwrap();
-        let row = c.query_one("SELECT val FROM it_txn WHERE id = 1", &[]).await.unwrap();
+        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
+        c.execute("INSERT INTO it_txn VALUES (1, 10)", &[])
+            .await
+            .unwrap();
+        c.execute("UPDATE it_txn SET val = val + 1 WHERE id = 1", &[])
+            .await
+            .unwrap();
+        let row = c
+            .query_one("SELECT val FROM it_txn WHERE id = 1", &[])
+            .await
+            .unwrap();
         let v: i32 = row.get(0);
         assert_eq!(v, 11);
     });
@@ -323,10 +346,19 @@ fn pg_test_delete() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[]).await.unwrap();
-        c.execute("INSERT INTO it_txn VALUES (1, 1), (2, 2), (3, 3)", &[]).await.unwrap();
-        c.execute("DELETE FROM it_txn WHERE id = 2", &[]).await.unwrap();
-        let rows = c.query("SELECT id FROM it_txn ORDER BY id", &[]).await.unwrap();
+        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
+        c.execute("INSERT INTO it_txn VALUES (1, 1), (2, 2), (3, 3)", &[])
+            .await
+            .unwrap();
+        c.execute("DELETE FROM it_txn WHERE id = 2", &[])
+            .await
+            .unwrap();
+        let rows = c
+            .query("SELECT id FROM it_txn ORDER BY id", &[])
+            .await
+            .unwrap();
         let ids: Vec<i32> = rows.iter().map(|r| r.get(0)).collect();
         assert_eq!(ids, vec![1, 3]);
     });
@@ -337,17 +369,25 @@ fn pg_test_null_handling() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[]).await.unwrap();
-        c.execute("INSERT INTO it_basic (val) VALUES (NULL), ($1)", &[&"present"])
-            .await.unwrap();
+        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
+        c.execute(
+            "INSERT INTO it_basic (val) VALUES (NULL), ($1)",
+            &[&"present"],
+        )
+        .await
+        .unwrap();
         let null_count: i64 = c
             .query_one("SELECT COUNT(*) FROM it_basic WHERE val IS NULL", &[])
-            .await.unwrap()
+            .await
+            .unwrap()
             .get(0);
         assert_eq!(null_count, 1);
         let nonnull: Vec<Option<String>> = c
             .query("SELECT val FROM it_basic WHERE val IS NOT NULL", &[])
-            .await.unwrap()
+            .await
+            .unwrap()
             .iter()
             .map(|r| r.get(0))
             .collect();
@@ -362,16 +402,22 @@ fn pg_test_types_roundtrip() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_types RESTART IDENTITY CASCADE", &[]).await.unwrap();
+        c.execute("TRUNCATE it_types RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
         c.execute(
             "INSERT INTO it_types (i_col, f_col, t_col, b_col) VALUES ($1, $2, $3, $4)",
-            &[&42_i32, &3.14_f64, &"hello 🦀", &true],
+            &[&42_i32, &std::f64::consts::PI, &"hello 🦀", &true],
         )
-        .await.unwrap();
-        let row = c.query_one("SELECT i_col, f_col, t_col, b_col FROM it_types", &[]).await.unwrap();
+        .await
+        .unwrap();
+        let row = c
+            .query_one("SELECT i_col, f_col, t_col, b_col FROM it_types", &[])
+            .await
+            .unwrap();
         assert_eq!(row.get::<_, i32>(0), 42);
         let f: f64 = row.get(1);
-        assert!((f - 3.14).abs() < 1e-9);
+        assert!((f - std::f64::consts::PI).abs() < 1e-9);
         assert_eq!(row.get::<_, String>(2), "hello 🦀");
         assert!(row.get::<_, bool>(3));
     });
@@ -382,9 +428,13 @@ fn pg_test_unicode() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[]).await.unwrap();
+        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
         let s = "日本語テスト 🎉 中文测试 한국어";
-        c.execute("INSERT INTO it_basic (val) VALUES ($1)", &[&s]).await.unwrap();
+        c.execute("INSERT INTO it_basic (val) VALUES ($1)", &[&s])
+            .await
+            .unwrap();
         let row = c.query_one("SELECT val FROM it_basic", &[]).await.unwrap();
         assert_eq!(row.get::<_, String>(0), s);
     });
@@ -397,11 +447,18 @@ fn pg_test_transaction_commit() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[]).await.unwrap();
+        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
         c.execute("BEGIN", &[]).await.unwrap();
-        c.execute("INSERT INTO it_txn VALUES (42, 999)", &[]).await.unwrap();
+        c.execute("INSERT INTO it_txn VALUES (42, 999)", &[])
+            .await
+            .unwrap();
         c.execute("COMMIT", &[]).await.unwrap();
-        let row = c.query_one("SELECT val FROM it_txn WHERE id = 42", &[]).await.unwrap();
+        let row = c
+            .query_one("SELECT val FROM it_txn WHERE id = 42", &[])
+            .await
+            .unwrap();
         assert_eq!(row.get::<_, i32>(0), 999);
     });
 }
@@ -411,13 +468,18 @@ fn pg_test_transaction_rollback() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[]).await.unwrap();
+        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
         c.execute("BEGIN", &[]).await.unwrap();
-        c.execute("INSERT INTO it_txn VALUES (99, 0)", &[]).await.unwrap();
+        c.execute("INSERT INTO it_txn VALUES (99, 0)", &[])
+            .await
+            .unwrap();
         c.execute("ROLLBACK", &[]).await.unwrap();
         let count: i64 = c
             .query_one("SELECT COUNT(*) FROM it_txn WHERE id = 99", &[])
-            .await.unwrap()
+            .await
+            .unwrap()
             .get(0);
         assert_eq!(count, 0, "ROLLBACK must not persist the row");
     });
@@ -428,16 +490,23 @@ fn pg_test_transaction_savepoint() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[]).await.unwrap();
+        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
         c.execute("BEGIN", &[]).await.unwrap();
-        c.execute("INSERT INTO it_txn VALUES (1, 10)", &[]).await.unwrap();
+        c.execute("INSERT INTO it_txn VALUES (1, 10)", &[])
+            .await
+            .unwrap();
         c.execute("SAVEPOINT sp1", &[]).await.unwrap();
-        c.execute("INSERT INTO it_txn VALUES (2, 20)", &[]).await.unwrap();
+        c.execute("INSERT INTO it_txn VALUES (2, 20)", &[])
+            .await
+            .unwrap();
         c.execute("ROLLBACK TO SAVEPOINT sp1", &[]).await.unwrap();
         c.execute("COMMIT", &[]).await.unwrap();
         let count: i64 = c
             .query_one("SELECT COUNT(*) FROM it_txn", &[])
-            .await.unwrap()
+            .await
+            .unwrap()
             .get(0);
         assert_eq!(count, 1, "only row before savepoint should survive");
     });
@@ -450,14 +519,20 @@ fn pg_test_prepared_statement() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[]).await.unwrap();
-        let stmt = c.prepare("INSERT INTO it_basic (val) VALUES ($1)").await.unwrap();
+        c.execute("TRUNCATE it_basic RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
+        let stmt = c
+            .prepare("INSERT INTO it_basic (val) VALUES ($1)")
+            .await
+            .unwrap();
         for i in 0..5 {
             c.execute(&stmt, &[&format!("item_{i}")]).await.unwrap();
         }
         let count: i64 = c
             .query_one("SELECT COUNT(*) FROM it_basic", &[])
-            .await.unwrap()
+            .await
+            .unwrap()
             .get(0);
         assert_eq!(count, 5);
     });
@@ -468,9 +543,16 @@ fn pg_test_prepared_parameterized_select() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[]).await.unwrap();
-        c.execute("INSERT INTO it_txn VALUES (1, 100), (2, 200)", &[]).await.unwrap();
-        let stmt = c.prepare("SELECT val FROM it_txn WHERE id = $1").await.unwrap();
+        c.execute("TRUNCATE it_txn RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
+        c.execute("INSERT INTO it_txn VALUES (1, 100), (2, 200)", &[])
+            .await
+            .unwrap();
+        let stmt = c
+            .prepare("SELECT val FROM it_txn WHERE id = $1")
+            .await
+            .unwrap();
         let row = c.query_one(&stmt, &[&2_i32]).await.unwrap();
         assert_eq!(row.get::<_, i32>(0), 200);
     });
@@ -483,15 +565,20 @@ fn pg_test_large_result_set() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("TRUNCATE it_large RESTART IDENTITY CASCADE", &[]).await.unwrap();
+        c.execute("TRUNCATE it_large RESTART IDENTITY CASCADE", &[])
+            .await
+            .unwrap();
         // 100 rows with 200-char padding
         let pad = "x".repeat(200);
         for _ in 0..100 {
-            c.execute("INSERT INTO it_large (pad) VALUES ($1)", &[&pad]).await.unwrap();
+            c.execute("INSERT INTO it_large (pad) VALUES ($1)", &[&pad])
+                .await
+                .unwrap();
         }
         let count: i64 = c
             .query_one("SELECT COUNT(*) FROM it_large", &[])
-            .await.unwrap()
+            .await
+            .unwrap()
             .get(0);
         assert_eq!(count, 100);
     });
@@ -521,16 +608,15 @@ fn pg_test_concurrent_connections() {
             std::thread::spawn(move || {
                 rt().block_on(async move {
                     let c = proxy_client().await;
-                    let row = c
-                        .query_one(&format!("SELECT {i} AS n"), &[])
-                        .await
-                        .unwrap();
+                    let row = c.query_one(&format!("SELECT {i} AS n"), &[]).await.unwrap();
                     assert_eq!(row.get::<_, i32>("n"), i);
                 });
             })
         })
         .collect();
-    for h in handles { h.join().expect("thread panicked"); }
+    for h in handles {
+        h.join().expect("thread panicked");
+    }
 }
 
 // ── Tests — Session / search_path ─────────────────────────────────────────────
@@ -543,7 +629,10 @@ fn pg_test_set_search_path() {
         c.execute("SET search_path TO public", &[]).await.unwrap();
         let row = c.query_one("SHOW search_path", &[]).await.unwrap();
         let sp: String = row.get(0);
-        assert!(sp.contains("public"), "search_path should contain public: {sp}");
+        assert!(
+            sp.contains("public"),
+            "search_path should contain public: {sp}"
+        );
     });
 }
 
@@ -552,7 +641,9 @@ fn pg_test_set_application_name() {
     require_proxy!();
     rt().block_on(async {
         let c = proxy_client().await;
-        c.execute("SET application_name TO 'turbineproxy_test'", &[]).await.unwrap();
+        c.execute("SET application_name TO 'turbineproxy_test'", &[])
+            .await
+            .unwrap();
         let row = c.query_one("SHOW application_name", &[]).await.unwrap();
         let name: String = row.get(0);
         assert_eq!(name, "turbineproxy_test");
@@ -576,7 +667,10 @@ fn pg_test_list_tables_via_proxy_sql() {
             .await
             .unwrap();
         let tables: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
-        assert!(tables.contains(&"it_basic".to_string()), "it_basic should exist: {tables:?}");
+        assert!(
+            tables.contains(&"it_basic".to_string()),
+            "it_basic should exist: {tables:?}"
+        );
     });
 }
 
@@ -593,7 +687,10 @@ fn pg_test_list_schemas() {
             .await
             .unwrap();
         let schemas: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
-        assert!(schemas.contains(&"public".to_string()), "public schema missing");
+        assert!(
+            schemas.contains(&"public".to_string()),
+            "public schema missing"
+        );
         assert!(schemas.contains(&"information_schema".to_string()));
     });
 }
@@ -603,20 +700,31 @@ fn pg_test_list_schemas() {
 #[test]
 fn pg_test_replica_is_in_recovery() {
     // Only run when a replica port is configured.
-    let Some(rport) = pg_replica_port() else { return };
+    let Some(rport) = pg_replica_port() else {
+        return;
+    };
     rt().block_on(async {
         let mut cfg = Config::new();
-        cfg.host(&pg_host())
+        cfg.host(pg_host())
             .port(rport)
-            .user(&pg_user())
+            .user(pg_user())
             .password(pg_pass().as_bytes())
             .dbname("postgres")
             .connect_timeout(Duration::from_secs(5));
-        let (c, conn) = cfg.connect(NoTls).await.expect("direct pg connect (postgres db)");
+        let (c, conn) = cfg
+            .connect(NoTls)
+            .await
+            .expect("direct pg connect (postgres db)");
         tokio::spawn(conn);
-        let row = c.query_one("SELECT pg_is_in_recovery()", &[]).await.unwrap();
+        let row = c
+            .query_one("SELECT pg_is_in_recovery()", &[])
+            .await
+            .unwrap();
         let in_recovery: bool = row.get(0);
-        assert!(in_recovery, "replica should report pg_is_in_recovery = true");
+        assert!(
+            in_recovery,
+            "replica should report pg_is_in_recovery = true"
+        );
     });
 }
 
@@ -626,16 +734,25 @@ fn pg_test_primary_not_in_recovery() {
         // Connect to the always-present "postgres" db so this test works on any
         // backend regardless of whether turbineproxy_test has been created yet.
         let mut cfg = Config::new();
-        cfg.host(&pg_host())
+        cfg.host(pg_host())
             .port(pg_port())
-            .user(&pg_user())
+            .user(pg_user())
             .password(pg_pass().as_bytes())
             .dbname("postgres")
             .connect_timeout(Duration::from_secs(5));
-        let (c, conn) = cfg.connect(NoTls).await.expect("direct pg connect (postgres db)");
+        let (c, conn) = cfg
+            .connect(NoTls)
+            .await
+            .expect("direct pg connect (postgres db)");
         tokio::spawn(conn);
-        let row = c.query_one("SELECT pg_is_in_recovery()", &[]).await.unwrap();
+        let row = c
+            .query_one("SELECT pg_is_in_recovery()", &[])
+            .await
+            .unwrap();
         let in_recovery: bool = row.get(0);
-        assert!(!in_recovery, "primary should report pg_is_in_recovery = false");
+        assert!(
+            !in_recovery,
+            "primary should report pg_is_in_recovery = false"
+        );
     });
 }

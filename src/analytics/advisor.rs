@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 
 use crate::config::BackendConfig;
 use crate::protocol::{BackendConnection, DatabaseProtocol};
@@ -109,9 +109,8 @@ fn parse_explain_json(json: &str) -> Vec<ExplainSignals> {
     while let Some(pos) = remaining.find("\"table_name\"") {
         remaining = &remaining[pos..];
         let table = extract_str_value(remaining, "table_name").unwrap_or_default();
-        let access_type = AccessType::from_str(
-            &extract_str_value(remaining, "access_type").unwrap_or_default(),
-        );
+        let access_type =
+            AccessType::from_str(&extract_str_value(remaining, "access_type").unwrap_or_default());
         let rows_examined = extract_u64_value(remaining, "rows_examined_per_scan").unwrap_or(0);
         let filtered_pct = extract_f32_value(remaining, "filtered").unwrap_or(100.0);
         let has_filesort = extract_bool_value(remaining, "using_filesort");
@@ -141,11 +140,14 @@ fn extract_str_value(json: &str, key: &str) -> Option<String> {
     let pos = json.find(&needle)?;
     let after = json[pos + needle.len()..].trim_start();
     let after = after.strip_prefix(':')?.trim_start();
-    if after.starts_with('"') {
-        let inner = &after[1..];
+    if let Some(inner) = after.strip_prefix('"') {
         let end = inner.find('"')?;
         let val = inner[..end].to_string();
-        if val == "null" || val.is_empty() { None } else { Some(val) }
+        if val == "null" || val.is_empty() {
+            None
+        } else {
+            Some(val)
+        }
     } else {
         None
     }
@@ -204,7 +206,11 @@ fn extract_array_strings(json: &str, key: &str) -> Vec<String> {
         .split(',')
         .filter_map(|s| {
             let trimmed = s.trim().trim_matches('"');
-            if trimmed.is_empty() || trimmed == "null" { None } else { Some(trimmed.to_string()) }
+            if trimmed.is_empty() || trimmed == "null" {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
         })
         .collect()
 }
@@ -263,7 +269,11 @@ fn build_reason(s: &ExplainSignals) -> String {
     if s.access_type.is_problematic() {
         parts.push(format!(
             "full {} scan ({} rows)",
-            if matches!(s.access_type, AccessType::All) { "table" } else { "index" },
+            if matches!(s.access_type, AccessType::All) {
+                "table"
+            } else {
+                "index"
+            },
             s.rows_examined
         ));
     }
@@ -274,7 +284,10 @@ fn build_reason(s: &ExplainSignals) -> String {
         parts.push("temporary table (GROUP BY/DISTINCT without index)".to_string());
     }
     if s.filtered_pct < 10.0 {
-        parts.push(format!("low selectivity ({:.1}% rows pass filter)", s.filtered_pct));
+        parts.push(format!(
+            "low selectivity ({:.1}% rows pass filter)",
+            s.filtered_pct
+        ));
     }
     if parts.is_empty() {
         "query performance may benefit from an index".to_string()
@@ -308,7 +321,10 @@ impl AdvisorTask {
         let suggestions = Arc::new(Mutex::new(HashMap::new()));
         let suggestions_bg = suggestions.clone();
         tokio::spawn(advisor_loop(rx, protocol, primary_config, suggestions_bg));
-        Self { sender: tx, suggestions }
+        Self {
+            sender: tx,
+            suggestions,
+        }
     }
 
     /// Submit a slow query for background EXPLAIN analysis. Never blocks.

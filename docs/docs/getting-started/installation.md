@@ -10,6 +10,47 @@ sidebar_position: 1
 - **MySQL** 5.7+ or **MariaDB** 10.3+ (target backend)
 - **Linux** or **macOS** (Windows not currently tested)
 
+## One-line Installer (curl | sh)
+
+Install the latest TurbineProxy release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/turbineproxy/turbineproxy/main/scripts/install.sh | sh
+```
+
+Install a specific release tag:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/turbineproxy/turbineproxy/main/scripts/install.sh | sh -s -- v0.1.0
+```
+
+The installer detects OS/architecture, downloads the matching release binary,
+and installs it to `/usr/local/bin/turbineproxy` (uses `sudo` when needed).
+
+To customize the install directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/turbineproxy/turbineproxy/main/scripts/install.sh \
+	| TURBINEPROXY_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+## Interactive Config Wizard
+
+Generate a configuration file with an interactive prompt flow:
+
+```bash
+turbineproxy init
+```
+
+Write to a specific path:
+
+```bash
+turbineproxy init --output ./deploy/turbineproxy.toml
+```
+
+The wizard asks backend/listener/dashboard questions, validates the generated
+TOML, and writes a ready-to-run config file.
+
 ## Building from Source
 
 ```bash

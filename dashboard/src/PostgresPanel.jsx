@@ -163,7 +163,9 @@ function usePgSlowQueries(interval = 15000) {
       try {
         const r = await fetch('/api/slow-queries?protocol=pgsql&limit=20')
         if (alive && r.ok) setData(await r.json())
-      } catch (_) {}
+      } catch (_err) {
+        // ignore transient polling errors
+      }
     }
     fetch_()
     const id = setInterval(fetch_, interval)
@@ -180,7 +182,9 @@ function usePgErrors(interval = 10000) {
       try {
         const r = await fetch('/api/errors?protocol=postgres&limit=20')
         if (alive && r.ok) setData(await r.json())
-      } catch (_) {}
+      } catch (_err) {
+        // ignore transient polling errors
+      }
     }
     fetch_()
     const id = setInterval(fetch_, interval)

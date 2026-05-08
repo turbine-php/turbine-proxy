@@ -460,7 +460,7 @@ pub struct ProxyProtocolConfig {
 }
 
 /// TLS for accepting client connections.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct FrontendTlsConfig {
     /// Enable TLS on the proxy's listen socket.
     #[serde(default)]
@@ -473,12 +473,6 @@ pub struct FrontendTlsConfig {
     /// Path to a PEM-encoded server private key.
     #[serde(default)]
     pub key: String,
-}
-
-impl Default for FrontendTlsConfig {
-    fn default() -> Self {
-        Self { enabled: false, cert: String::new(), key: String::new() }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -512,7 +506,9 @@ impl Default for AnalyticsConfig {
     }
 }
 
-fn default_retention_days() -> u32 { 30 }
+fn default_retention_days() -> u32 {
+    30
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DashboardConfig {
@@ -592,7 +588,10 @@ pub struct GroupReplicationConfig {
 
 impl Default for GroupReplicationConfig {
     fn default() -> Self {
-        Self { enabled: false, check_interval_secs: default_gr_interval() }
+        Self {
+            enabled: false,
+            check_interval_secs: default_gr_interval(),
+        }
     }
 }
 
@@ -706,17 +705,39 @@ fn default_dashboard_addr() -> String {
     "0.0.0.0:8080".to_string()
 }
 
-fn default_health_interval() -> u64 { 5 }
-fn default_max_lag_ms() -> u64 { 5000 }
-fn default_failover_threshold() -> u32 { 3 }
-fn default_patroni_port() -> u16 { 8008 }
-fn default_gr_interval() -> u64 { 5 }
-fn default_shutdown_timeout_secs() -> u64 { 30 }
-fn default_client_error_window() -> u64 { 60 }
-fn default_resolution_family() -> String { "system".to_string() }
-fn default_pgsql_listen_addr() -> String { "0.0.0.0:5433".to_string() }
-fn default_pgsql_pool_size() -> usize { 10 }
-fn default_pgsql_health_database() -> String { "postgres".to_string() }
+fn default_health_interval() -> u64 {
+    5
+}
+fn default_max_lag_ms() -> u64 {
+    5000
+}
+fn default_failover_threshold() -> u32 {
+    3
+}
+fn default_patroni_port() -> u16 {
+    8008
+}
+fn default_gr_interval() -> u64 {
+    5
+}
+fn default_shutdown_timeout_secs() -> u64 {
+    30
+}
+fn default_client_error_window() -> u64 {
+    60
+}
+fn default_resolution_family() -> String {
+    "system".to_string()
+}
+fn default_pgsql_listen_addr() -> String {
+    "0.0.0.0:5433".to_string()
+}
+fn default_pgsql_pool_size() -> usize {
+    10
+}
+fn default_pgsql_health_database() -> String {
+    "postgres".to_string()
+}
 
 /// PostgreSQL proxy configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -779,7 +800,6 @@ pub struct PgsqlConfig {
     pub health_check_database: String,
 
     // ── Security ──────────────────────────────────────────────────────────────
-
     /// Enforce fingerprint allowlist.  When `true`, queries not in
     /// `query_whitelist` are rejected with SQLSTATE 42501. Default: false.
     #[serde(default)]
@@ -801,14 +821,12 @@ pub struct PgsqlConfig {
     pub audit_log: String,
 
     // ── Observability ─────────────────────────────────────────────────────────
-
     /// Queries that take longer than this (ms) are emitted to the slow query
     /// log (via the shared `Collector`).  0 = disabled.
     #[serde(default)]
     pub slow_query_log_ms: u64,
 
     // ── Patroni ───────────────────────────────────────────────────────────────
-
     /// Use Patroni REST API in addition to `pg_is_in_recovery()` to determine
     /// the role of each backend.  Default: false.
     #[serde(default)]
@@ -819,7 +837,6 @@ pub struct PgsqlConfig {
     pub patroni_api_port: u16,
 
     // ── Frontend TLS ──────────────────────────────────────────────────────────
-
     /// Path to the PEM certificate used for TLS on the PostgreSQL listener.
     /// Empty = TLS disabled (clients that send SSLRequest receive `N`).
     #[serde(default)]
@@ -832,28 +849,33 @@ pub struct PgsqlConfig {
 
 impl ProxyConfig {
     fn from_raw(raw: RawProxyConfig) -> anyhow::Result<Self> {
-        let mysql_enabled = raw.primary.is_some()
-            || raw.listen_addr.is_some()
-            || !raw.replicas.is_empty();
+        let mysql_enabled =
+            raw.primary.is_some() || raw.listen_addr.is_some() || !raw.replicas.is_empty();
 
         let shared = raw.shared.unwrap_or_default();
 
-        let listen_addr = raw.listen_addr
+        let listen_addr = raw
+            .listen_addr
             .or(shared.listen_addr)
             .unwrap_or_else(default_listen_addr);
-        let max_connections = raw.max_connections
+        let max_connections = raw
+            .max_connections
             .or(shared.max_connections)
             .unwrap_or_else(default_max_connections);
-        let pool_size = raw.pool_size
+        let pool_size = raw
+            .pool_size
             .or(shared.pool_size)
             .unwrap_or_else(default_pool_size);
 
-        let primary = raw.primary
+        let primary = raw
+            .primary
             .or(shared.primary)
             .or_else(|| raw.pgsql.primary.clone())
-            .ok_or_else(|| anyhow::anyhow!(
+            .ok_or_else(|| {
+                anyhow::anyhow!(
                 "missing backend config: define [primary], [shared.primary], or [pgsql.primary]"
-            ))?;
+            )
+            })?;
 
         let replicas = if !raw.replicas.is_empty() {
             raw.replicas
@@ -875,13 +897,16 @@ impl ProxyConfig {
             Vec::new()
         };
 
-        let auth_cache_ttl_secs = raw.auth_cache_ttl_secs
+        let auth_cache_ttl_secs = raw
+            .auth_cache_ttl_secs
             .or(shared.auth_cache_ttl_secs)
             .unwrap_or_else(default_auth_cache_ttl);
-        let connection_max_idle_secs = raw.connection_max_idle_secs
+        let connection_max_idle_secs = raw
+            .connection_max_idle_secs
             .or(shared.connection_max_idle_secs)
             .unwrap_or_else(default_connection_max_idle_secs);
-        let read_your_own_writes_ms = raw.read_your_own_writes_ms
+        let read_your_own_writes_ms = raw
+            .read_your_own_writes_ms
             .or(shared.read_your_own_writes_ms)
             .unwrap_or_default();
 
@@ -890,12 +915,11 @@ impl ProxyConfig {
         } else {
             shared.query_whitelist
         };
-        let sql_injection_protection = raw.sql_injection_protection
+        let sql_injection_protection = raw
+            .sql_injection_protection
             .or(shared.sql_injection_protection)
             .unwrap_or(false);
-        let audit_log = raw.audit_log
-            .or(shared.audit_log)
-            .unwrap_or_default();
+        let audit_log = raw.audit_log.or(shared.audit_log).unwrap_or_default();
 
         Ok(Self {
             mysql_enabled,
@@ -993,5 +1017,217 @@ impl ProxyConfig {
         }
 
         pg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helper: minimal valid TOML ─────────────────────────────────────────────
+
+    fn minimal_toml(primary_addr: &str) -> String {
+        format!(
+            r#"
+[primary]
+addr = "{}"
+user = "root"
+password = "secret"
+"#,
+            primary_addr
+        )
+    }
+
+    // ── from_str: valid configs ────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_minimal_config() {
+        let cfg = ProxyConfig::from_str(&minimal_toml("127.0.0.1:3306")).unwrap();
+        assert_eq!(cfg.primary.addr, "127.0.0.1:3306");
+        assert_eq!(cfg.primary.user, "root");
+    }
+
+    #[test]
+    fn test_defaults_applied() {
+        let cfg = ProxyConfig::from_str(&minimal_toml("127.0.0.1:3306")).unwrap();
+        assert_eq!(cfg.listen_addr, "0.0.0.0:3307");
+        assert_eq!(cfg.max_connections, 1000);
+        assert_eq!(cfg.pool_size, 20);
+        assert_eq!(cfg.shutdown_timeout_secs, 30);
+        assert!(cfg.analytics.enabled);
+        assert_eq!(cfg.analytics.slow_query_ms, 100);
+    }
+
+    #[test]
+    fn test_parse_with_replicas() {
+        let toml = r#"
+[primary]
+addr = "10.0.0.1:3306"
+user = "rw"
+password = "pass"
+
+[[replicas]]
+addr = "10.0.0.2:3306"
+user = "ro"
+password = "pass"
+
+[[replicas]]
+addr = "10.0.0.3:3306"
+user = "ro"
+password = "pass"
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.replicas.len(), 2);
+        assert_eq!(cfg.replicas[0].addr, "10.0.0.2:3306");
+        assert_eq!(cfg.replicas[1].addr, "10.0.0.3:3306");
+    }
+
+    #[test]
+    fn test_parse_listen_addr_override() {
+        let toml = r#"
+listen_addr = "0.0.0.0:13307"
+
+[primary]
+addr = "127.0.0.1:3306"
+user = "root"
+password = "secret"
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.listen_addr, "0.0.0.0:13307");
+    }
+
+    #[test]
+    fn test_parse_analytics_override() {
+        let toml = format!(
+            "{}\n[analytics]\nenabled = false\nslow_query_ms = 500",
+            minimal_toml("127.0.0.1:3306")
+        );
+        let cfg = ProxyConfig::from_str(&toml).unwrap();
+        assert!(!cfg.analytics.enabled);
+        assert_eq!(cfg.analytics.slow_query_ms, 500);
+    }
+
+    #[test]
+    fn test_parse_users() {
+        let toml = r#"
+[primary]
+addr = "127.0.0.1:3306"
+user = "root"
+password = "secret"
+
+[[users]]
+name = "app"
+password = "apppass"
+allow_writes = true
+
+[[users]]
+name = "reader"
+password = "readpass"
+allow_writes = false
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.users.len(), 2);
+        assert_eq!(cfg.users[0].name, "app");
+        assert!(cfg.users[0].allow_writes);
+        assert_eq!(cfg.users[1].name, "reader");
+        assert!(!cfg.users[1].allow_writes);
+    }
+
+    #[test]
+    fn test_parse_tls_mode() {
+        let toml = r#"
+[primary]
+addr = "rds.example.com:3306"
+user = "admin"
+password = "pw"
+tls_mode = "verify-identity"
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.primary.tls_mode, TlsMode::VerifyIdentity);
+    }
+
+    #[test]
+    fn test_parse_query_rules() {
+        let toml = r#"
+[primary]
+addr = "127.0.0.1:3306"
+user = "root"
+password = "secret"
+
+[[query_rules]]
+match_pattern = "^SELECT"
+destination = "replica"
+comment = "reads to replica"
+
+[[query_rules]]
+match_digest = "SELECT * FROM heavy_table WHERE id = ?"
+destination = "primary"
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.query_rules.len(), 2);
+        assert_eq!(cfg.query_rules[0].destination, RuleDestination::Replica);
+        assert_eq!(cfg.query_rules[1].destination, RuleDestination::Primary);
+    }
+
+    // ── from_str: invalid configs ─────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_missing_primary_fails() {
+        let toml = r#"
+listen_addr = "0.0.0.0:3307"
+max_connections = 100
+"#;
+        assert!(
+            ProxyConfig::from_str(toml).is_err(),
+            "missing [primary] should fail"
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_toml_fails() {
+        assert!(ProxyConfig::from_str("this is not toml {{{{").is_err());
+    }
+
+    #[test]
+    fn test_parse_unknown_tls_mode_fails() {
+        let toml = r#"
+[primary]
+addr = "127.0.0.1:3306"
+user = "root"
+password = "secret"
+tls_mode = "invalid-mode"
+"#;
+        assert!(ProxyConfig::from_str(toml).is_err());
+    }
+
+    // ── Shared config inheritance ──────────────────────────────────────────────
+
+    #[test]
+    fn test_shared_pool_size_inherited() {
+        let toml = r#"
+[shared]
+pool_size = 50
+
+[primary]
+addr = "127.0.0.1:3306"
+user = "root"
+password = "secret"
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.pool_size, 50);
+    }
+
+    // ── Backend defaults ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_backend_default_weight() {
+        let cfg = ProxyConfig::from_str(&minimal_toml("127.0.0.1:3306")).unwrap();
+        assert_eq!(cfg.primary.weight, 100);
+    }
+
+    #[test]
+    fn test_backend_default_resolution_family() {
+        let cfg = ProxyConfig::from_str(&minimal_toml("127.0.0.1:3306")).unwrap();
+        assert_eq!(cfg.primary.resolution_family, "system");
     }
 }

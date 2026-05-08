@@ -11,17 +11,15 @@ use tokio::sync::RwLock;
 
 use crate::config::BackendConfig;
 use crate::protocol::{BackendConnection, BackendResponse, DatabaseProtocol};
-use crate::proxy::cache::{QueryCache, is_cacheable};
+use crate::proxy::cache::{is_cacheable, QueryCache};
 use crate::proxy::classifier::extract_tables_simple;
-use crate::proxy::stmt_shadow::{
-    PgStmtShadow, PgPipelineScan,
-    MysqlStmtShadow,
-    mysql_has_stmt_id, mysql_read_stmt_id, mysql_rewrite_stmt_id,
-    mysql_parse_prepare_ok, mysql_rewrite_prepare_ok,
-};
 use crate::proxy::pool::{BackendPool, ConnectionPool};
-use crate::proxy::rewriter::{Rewriter, RewriteOutcome};
+use crate::proxy::rewriter::{RewriteOutcome, Rewriter};
 use crate::proxy::rules::{Destination, RuleEngine};
+use crate::proxy::stmt_shadow::{
+    mysql_has_stmt_id, mysql_parse_prepare_ok, mysql_read_stmt_id, mysql_rewrite_prepare_ok,
+    mysql_rewrite_stmt_id, MysqlStmtShadow, PgPipelineScan, PgStmtShadow,
+};
 
 // ─── Mirror pool manager ──────────────────────────────────────────────────────
 
@@ -136,7 +134,8 @@ impl Router {
 
     /// Update the per-query timeout at runtime (call after config reload).
     pub fn set_max_query_time_ms(&self, ms: u64) {
-        self.max_query_time_ms.store(ms, std::sync::atomic::Ordering::Relaxed);
+        self.max_query_time_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Atomically swap in a new backend pool.
@@ -220,10 +219,21 @@ impl Router {
         user: &str,
         schema: &str,
     ) -> anyhow::Result<BackendResponse> {
-        self.route_query_inner(sql, tx_conn, in_transaction, use_replica, user, schema, &[], None).await
+        self.route_query_inner(
+            sql,
+            tx_conn,
+            in_transaction,
+            use_replica,
+            user,
+            schema,
+            &[],
+            None,
+        )
+        .await
     }
 
     /// PostgreSQL helper: routes query using a database-scoped backend pool.
+    #[allow(clippy::too_many_arguments)]
     pub async fn route_query_with_database(
         &self,
         sql: &[u8],
@@ -243,13 +253,15 @@ impl Router {
             schema,
             &[],
             Some(database),
-        ).await
+        )
+        .await
     }
 
     /// Like `route_query` but replays `session_init_sqls` on a newly-acquired
     /// sticky connection before executing the actual query.  Used for
     /// re-applying session variables (SET NAMES, SET @var, etc.) when the
     /// backend connection is replaced after the session has already set them.
+    #[allow(clippy::too_many_arguments)]
     pub async fn route_query_with_session_vars(
         &self,
         sql: &[u8],
@@ -269,11 +281,13 @@ impl Router {
             schema,
             session_init_sqls,
             None,
-        ).await
+        )
+        .await
     }
 
     /// PostgreSQL helper: session-vars variant with database-scoped pooling.
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn route_query_with_session_vars_and_database(
         &self,
         sql: &[u8],
@@ -294,9 +308,11 @@ impl Router {
             schema,
             session_init_sqls,
             Some(database),
-        ).await
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn route_query_inner(
         &self,
         sql: &[u8],
@@ -335,7 +351,9 @@ impl Router {
         let sql_str = std::str::from_utf8(sql).unwrap_or("");
 
         // Per-query timeout (0 = disabled).
-        let timeout_ms = self.max_query_time_ms.load(std::sync::atomic::Ordering::Relaxed);
+        let timeout_ms = self
+            .max_query_time_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         // ── Step 1: query rewriting ───────────────────────────────────────────
         // Rewrites run before routing so that rules and the cache see the
@@ -359,7 +377,9 @@ impl Router {
             sql_str
         };
         let effective_bytes: Vec<u8>;
-        let sql_bytes_to_use: &[u8] = if effective_sql.len() != sql_str.len() || !std::ptr::eq(effective_sql.as_ptr(), sql_str.as_ptr()) {
+        let sql_bytes_to_use: &[u8] = if effective_sql.len() != sql_str.len()
+            || !std::ptr::eq(effective_sql.as_ptr(), sql_str.as_ptr())
+        {
             effective_bytes = effective_sql.as_bytes().to_vec();
             &effective_bytes
         } else {
@@ -381,14 +401,21 @@ impl Router {
                 let cache_ok = m.cache_ttl_secs > 0;
                 if cache_ok && is_cacheable(effective_sql) {
                     if let Some(cached) = self.cache.get(&scoped_cache_key).await {
-                        return Ok(BackendResponse { bytes: cached, affected_rows: None, is_error: false });
+                        return Ok(BackendResponse {
+                            bytes: cached,
+                            affected_rows: None,
+                            is_error: false,
+                        });
                     }
                 }
                 let (mut conn, put_idx) = pool.get_hostgroup_for_database(hg, database).await?;
                 let response = if timeout_ms > 0 {
-                    self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms).await?
+                    self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms)
+                        .await?
                 } else {
-                    conn.execute_query(sql_bytes_to_use).await.map_err(|e| anyhow::anyhow!("{}", e))?
+                    conn.execute_query(sql_bytes_to_use)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?
                 };
                 if put_idx == usize::MAX {
                     pool.put_primary_for_database(conn, database).await;
@@ -396,7 +423,9 @@ impl Router {
                     pool.put_replica_for_database(conn, put_idx, database).await;
                 }
                 if cache_ok && !response.is_error {
-                    self.cache.put(&scoped_cache_key, response.bytes.clone()).await;
+                    self.cache
+                        .put(&scoped_cache_key, response.bytes.clone())
+                        .await;
                 } else if !response.is_error && hg == 0 {
                     let tables = extract_tables_simple(effective_sql);
                     self.cache.invalidate_tables(&tables).await;
@@ -430,22 +459,32 @@ impl Router {
         if effective_replica {
             let (mut conn, replica_idx) = pool.get_replica_for_database(database).await?;
             let response = match if timeout_ms > 0 {
-                self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms).await
+                self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms)
+                    .await
             } else {
-                conn.execute_query(sql_bytes_to_use).await.map_err(|e| anyhow::anyhow!("{}", e))
+                conn.execute_query(sql_bytes_to_use)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
             } {
                 Ok(r) => r,
                 Err(e) => {
                     // Dead replica connection — retry once on a fresh one.
                     if is_connection_lost(&e) {
-                        log::warn!("[pool] replica connection lost, retrying query on fresh connection");
+                        log::warn!(
+                            "[pool] replica connection lost, retrying query on fresh connection"
+                        );
                         drop(conn); // discard dead connection (not returned to pool)
-                        let (mut fresh, fresh_idx) = pool.get_replica_for_database(database).await?;
-                        let r = fresh.execute_query(sql_bytes_to_use).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+                        let (mut fresh, fresh_idx) =
+                            pool.get_replica_for_database(database).await?;
+                        let r = fresh
+                            .execute_query(sql_bytes_to_use)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{}", e))?;
                         if fresh_idx == usize::MAX {
                             pool.put_primary_for_database(fresh, database).await;
                         } else {
-                            pool.put_replica_for_database(fresh, fresh_idx, database).await;
+                            pool.put_replica_for_database(fresh, fresh_idx, database)
+                                .await;
                         }
                         return Ok(r);
                     }
@@ -455,10 +494,13 @@ impl Router {
             if replica_idx == usize::MAX {
                 pool.put_primary_for_database(conn, database).await;
             } else {
-                pool.put_replica_for_database(conn, replica_idx, database).await;
+                pool.put_replica_for_database(conn, replica_idx, database)
+                    .await;
             }
             if cache_allowed && !response.is_error {
-                self.cache.put(&scoped_cache_key, response.bytes.clone()).await;
+                self.cache
+                    .put(&scoped_cache_key, response.bytes.clone())
+                    .await;
             }
             if let Some(ref m) = rule_match {
                 if let Some(ref addr) = m.mirror_to {
@@ -470,17 +512,25 @@ impl Router {
             // Write path — execute on primary, then invalidate affected tables.
             let mut conn = pool.get_primary_for_database(database).await?;
             let response = match if timeout_ms > 0 {
-                self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms).await
+                self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms)
+                    .await
             } else {
-                conn.execute_query(sql_bytes_to_use).await.map_err(|e| anyhow::anyhow!("{}", e))
+                conn.execute_query(sql_bytes_to_use)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
             } {
                 Ok(r) => r,
                 Err(e) => {
                     if is_connection_lost(&e) {
-                        log::warn!("[pool] primary connection lost, retrying query on fresh connection");
+                        log::warn!(
+                            "[pool] primary connection lost, retrying query on fresh connection"
+                        );
                         drop(conn);
                         let mut fresh = pool.get_primary_for_database(database).await?;
-                        let r = fresh.execute_query(sql_bytes_to_use).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+                        let r = fresh
+                            .execute_query(sql_bytes_to_use)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{}", e))?;
                         pool.put_primary_for_database(fresh, database).await;
                         return Ok(r);
                     }
@@ -546,7 +596,8 @@ impl Router {
         tx_conn: &mut Option<Box<dyn BackendConnection>>,
         in_transaction: bool,
     ) -> anyhow::Result<BackendResponse> {
-        self.route_raw_inner(packet, tx_conn, in_transaction, None).await
+        self.route_raw_inner(packet, tx_conn, in_transaction, None)
+            .await
     }
 
     /// PostgreSQL helper: route raw packets using database-scoped pooling.
@@ -558,7 +609,8 @@ impl Router {
         in_transaction: bool,
         database: &str,
     ) -> anyhow::Result<BackendResponse> {
-        self.route_raw_inner(packet, tx_conn, in_transaction, Some(database)).await
+        self.route_raw_inner(packet, tx_conn, in_transaction, Some(database))
+            .await
     }
 
     async fn route_raw_inner(
@@ -645,7 +697,9 @@ impl Router {
                 // Only retry COM_STMT_PREPARE — we can re-prepare on a fresh conn.
                 // COM_STMT_EXECUTE cannot be retried because the stmt_id is gone.
                 if packet.first().copied() == Some(cmd::COM_STMT_PREPARE) {
-                    log::warn!("[pool] stmt connection lost during PREPARE, retrying on fresh connection");
+                    log::warn!(
+                        "[pool] stmt connection lost during PREPARE, retrying on fresh connection"
+                    );
                     // Discard the dead connection and open a fresh one.
                     *stmt_conn = Some(pool.get_primary().await?);
                     stmt_conn
@@ -684,17 +738,19 @@ impl Router {
     #[allow(dead_code)]
     pub async fn route_stmt_pg_shadow(
         &self,
-        raw:          &[u8],
-        scan:         &PgPipelineScan,
-        shadow:       &PgStmtShadow,
-        stmt_conn:    &mut Option<Box<dyn BackendConnection>>,
-        tx_conn:      &mut Option<Box<dyn BackendConnection>>,
+        raw: &[u8],
+        scan: &PgPipelineScan,
+        shadow: &PgStmtShadow,
+        stmt_conn: &mut Option<Box<dyn BackendConnection>>,
+        tx_conn: &mut Option<Box<dyn BackendConnection>>,
         in_transaction: bool,
     ) -> anyhow::Result<BackendResponse> {
-        self.route_stmt_pg_shadow_inner(raw, scan, shadow, stmt_conn, tx_conn, in_transaction, None).await
+        self.route_stmt_pg_shadow_inner(raw, scan, shadow, stmt_conn, tx_conn, in_transaction, None)
+            .await
     }
 
     /// PostgreSQL helper: route extended protocol packets using DB-scoped pools.
+    #[allow(clippy::too_many_arguments)]
     pub async fn route_stmt_pg_shadow_with_database(
         &self,
         raw: &[u8],
@@ -713,16 +769,18 @@ impl Router {
             tx_conn,
             in_transaction,
             Some(database),
-        ).await
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn route_stmt_pg_shadow_inner(
         &self,
-        raw:          &[u8],
-        scan:         &PgPipelineScan,
-        shadow:       &PgStmtShadow,
-        stmt_conn:    &mut Option<Box<dyn BackendConnection>>,
-        tx_conn:      &mut Option<Box<dyn BackendConnection>>,
+        raw: &[u8],
+        scan: &PgPipelineScan,
+        shadow: &PgStmtShadow,
+        stmt_conn: &mut Option<Box<dyn BackendConnection>>,
+        tx_conn: &mut Option<Box<dyn BackendConnection>>,
         in_transaction: bool,
         database: Option<&str>,
     ) -> anyhow::Result<BackendResponse> {
@@ -814,10 +872,10 @@ impl Router {
     /// checking `shadow.is_empty()`).
     pub async fn route_stmt_mysql_shadow(
         &self,
-        raw:          &[u8],
-        shadow:       &mut MysqlStmtShadow,
-        stmt_conn:    &mut Option<Box<dyn BackendConnection>>,
-        tx_conn:      &mut Option<Box<dyn BackendConnection>>,
+        raw: &[u8],
+        shadow: &mut MysqlStmtShadow,
+        stmt_conn: &mut Option<Box<dyn BackendConnection>>,
+        tx_conn: &mut Option<Box<dyn BackendConnection>>,
         in_transaction: bool,
     ) -> anyhow::Result<BackendResponse> {
         use crate::protocol::mysql::command as cmd;
@@ -826,7 +884,7 @@ impl Router {
 
         let cmd_byte = match raw.first().copied() {
             Some(b) => b,
-            None    => return Err(anyhow::anyhow!("[mysql shadow] empty stmt packet")),
+            None => return Err(anyhow::anyhow!("[mysql shadow] empty stmt packet")),
         };
 
         // Ensure the sticky connection exists.
@@ -834,10 +892,8 @@ impl Router {
             if tx_conn.is_none() {
                 *tx_conn = Some(pool.get_primary().await?);
             }
-        } else {
-            if stmt_conn.is_none() {
-                *stmt_conn = Some(pool.get_primary().await?);
-            }
+        } else if stmt_conn.is_none() {
+            *stmt_conn = Some(pool.get_primary().await?);
         }
 
         // Helper macro — borrows the correct connection without holding across await.
@@ -866,20 +922,22 @@ impl Router {
                         if let Some((backend_id, num_columns, num_params)) =
                             mysql_parse_prepare_ok(&response.bytes)
                         {
-                            let proxy_id = shadow.register(
-                                query, num_params, num_columns, backend_id,
-                            );
+                            let proxy_id =
+                                shadow.register(query, num_params, num_columns, backend_id);
                             mysql_rewrite_prepare_ok(&mut response.bytes, proxy_id);
                             log::debug!(
                                 "[mysql shadow] PREPARE proxy_id={} backend_id={}",
-                                proxy_id, backend_id
+                                proxy_id,
+                                backend_id
                             );
                         }
                         Ok(response)
                     }
                     Err(e) if is_connection_lost(&e) && !in_transaction => {
                         // Re-try on fresh connection (no state committed yet).
-                        log::warn!("[mysql shadow] PREPARE: connection lost, retrying on fresh connection");
+                        log::warn!(
+                            "[mysql shadow] PREPARE: connection lost, retrying on fresh connection"
+                        );
                         *stmt_conn = Some(pool.get_primary().await?);
                         let mut response = stmt_conn
                             .as_mut()
@@ -891,7 +949,10 @@ impl Router {
                             mysql_parse_prepare_ok(&response.bytes)
                         {
                             let proxy_id = shadow.register(
-                                raw[1..].to_vec(), num_params, num_columns, backend_id,
+                                raw[1..].to_vec(),
+                                num_params,
+                                num_columns,
+                                backend_id,
                             );
                             mysql_rewrite_prepare_ok(&mut response.bytes, proxy_id);
                         }
@@ -905,7 +966,7 @@ impl Router {
             b if mysql_has_stmt_id(b) => {
                 let proxy_id = match mysql_read_stmt_id(raw) {
                     Some(id) => id,
-                    None     => {
+                    None => {
                         return active_conn!()
                             .send_raw(raw)
                             .await
@@ -916,7 +977,7 @@ impl Router {
                 // Map proxy → backend stmt_id (fall back to pass-through for
                 // stmts prepared before shadow was enabled).
                 let backend_id = shadow.backend_id(proxy_id).unwrap_or(proxy_id);
-                let rewritten  = mysql_rewrite_stmt_id(raw, backend_id);
+                let rewritten = mysql_rewrite_stmt_id(raw, backend_id);
 
                 let result = active_conn!()
                     .send_raw(&rewritten)
@@ -950,8 +1011,7 @@ impl Router {
                         for (pid, prep) in &jobs {
                             match fresh.send_raw(prep).await {
                                 Ok(resp) => {
-                                    if let Some((new_bid, ..)) =
-                                        mysql_parse_prepare_ok(&resp.bytes)
+                                    if let Some((new_bid, ..)) = mysql_parse_prepare_ok(&resp.bytes)
                                     {
                                         new_ids.insert(*pid, new_bid);
                                         log::debug!(
@@ -963,7 +1023,8 @@ impl Router {
                                 Err(re) => {
                                     log::warn!(
                                         "[mysql shadow] re-prepare proxy_id={} failed: {}",
-                                        pid, re
+                                        pid,
+                                        re
                                     );
                                 }
                             }
@@ -973,7 +1034,7 @@ impl Router {
 
                         // Retry EXECUTE with updated backend_id.
                         let new_backend_id = shadow.backend_id(proxy_id).unwrap_or(backend_id);
-                        let retry_packet   = mysql_rewrite_stmt_id(raw, new_backend_id);
+                        let retry_packet = mysql_rewrite_stmt_id(raw, new_backend_id);
                         stmt_conn
                             .as_mut()
                             .unwrap()

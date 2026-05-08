@@ -279,14 +279,6 @@ function TableToolbar({ search, onSearch, page, setPage, pageSize, onPageSize, t
   )
 }
 
-function pagerBtnStyle(disabled) {
-  return {
-    padding: '3px 9px', fontSize: 14, borderRadius: 5, border: '1px solid var(--border)',
-    background: 'var(--surface2)', color: disabled ? 'var(--muted)' : 'var(--text)',
-    cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.4 : 1,
-  }
-}
-
 function StatCard({ label, value, sub }) {
   return (
     <div className="stat-card">
@@ -677,7 +669,6 @@ function PoolPanel({ capabilities }) {
 
   const mysqlPool = mysql?.pool
   const mysqlPrimaryTotal = (mysqlPool?.primary_idle ?? 0) + (mysqlPool?.primary_in_use ?? 0)
-  const mysqlReplicaTotal = (mysqlPool?.replica_idle ?? 0) + (mysqlPool?.replica_in_use ?? 0)
   const mysqlTotalCreated = (mysqlPool?.primary_created ?? 0) + (mysqlPool?.replica_created ?? 0)
   const mysqlTotalReused  = (mysqlPool?.primary_reused ?? 0) + (mysqlPool?.replica_reused ?? 0)
   const mysqlTotalEvicted = (mysqlPool?.primary_evicted ?? 0) + (mysqlPool?.replica_evicted ?? 0)
@@ -1911,8 +1902,8 @@ function TsLineChart({ points, valueKey, color }) {
   const xStep = Math.max(1, Math.floor(points.length / 6))
   const xTicks = points
     .filter((_, i) => i % xStep === 0 || i === points.length - 1)
-    .map((p, _, arr) => ({
-      x: xs[points.indexOf(p)],
+    .map((p, i) => ({
+      x: xs[i * xStep] ?? xs[xs.length - 1],
       label: formatBucket(p.bucket_unix),
     }))
 

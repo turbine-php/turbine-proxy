@@ -43,28 +43,50 @@ use tokio_postgres::{Config as PgConfig, NoTls};
 
 // ── Shared config helpers ──────────────────────────────────────────────────────
 
-fn mysql_host() -> String { env::var("TEST_MYSQL_HOST").unwrap_or_else(|_| "127.0.0.1".into()) }
-fn mysql_port() -> u16 { env::var("TEST_MYSQL_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3306) }
-fn mysql_user() -> String { env::var("TEST_MYSQL_USER").unwrap_or_else(|_| "root".into()) }
-fn mysql_pass() -> String { env::var("TEST_MYSQL_PASS").unwrap_or_else(|_| "root".into()) }
+fn mysql_host() -> String {
+    env::var("TEST_MYSQL_HOST").unwrap_or_else(|_| "127.0.0.1".into())
+}
+fn mysql_port() -> u16 {
+    env::var("TEST_MYSQL_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3306)
+}
+fn mysql_user() -> String {
+    env::var("TEST_MYSQL_USER").unwrap_or_else(|_| "root".into())
+}
+fn mysql_pass() -> String {
+    env::var("TEST_MYSQL_PASS").unwrap_or_else(|_| "root".into())
+}
 
-fn pg_host() -> String { env::var("TEST_PG_HOST").unwrap_or_else(|_| "127.0.0.1".into()) }
-fn pg_port() -> u16 { env::var("TEST_PG_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(5432) }
-fn pg_user() -> String { env::var("TEST_PG_USER").unwrap_or_else(|_| "postgres".into()) }
-fn pg_pass() -> String { env::var("TEST_PG_PASS").unwrap_or_else(|_| "postgres".into()) }
+fn pg_host() -> String {
+    env::var("TEST_PG_HOST").unwrap_or_else(|_| "127.0.0.1".into())
+}
+fn pg_port() -> u16 {
+    env::var("TEST_PG_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5432)
+}
+fn pg_user() -> String {
+    env::var("TEST_PG_USER").unwrap_or_else(|_| "postgres".into())
+}
+fn pg_pass() -> String {
+    env::var("TEST_PG_PASS").unwrap_or_else(|_| "postgres".into())
+}
 
 const MYSQL_DB: &str = "turbineproxy_test";
-const PG_DB:    &str = "turbineproxy_test";
+const PG_DB: &str = "turbineproxy_test";
 
 // Node A ports
-const MYSQL_PROXY_A:  u16 = 23307;
-const PG_PROXY_A:     u16 = 25433;
-const DASHBOARD_A:    u16 = 28080;
+const MYSQL_PROXY_A: u16 = 23307;
+const PG_PROXY_A: u16 = 25433;
+const DASHBOARD_A: u16 = 28080;
 
 // Node B ports
-const MYSQL_PROXY_B:  u16 = 23308;
-const PG_PROXY_B:     u16 = 25434;
-const DASHBOARD_B:    u16 = 28081;
+const MYSQL_PROXY_B: u16 = 23308;
+const PG_PROXY_B: u16 = 25434;
+const DASHBOARD_B: u16 = 28081;
 
 const CLUSTER_SECRET: &str = "test-cluster-secret-xyz";
 
@@ -72,9 +94,9 @@ const CLUSTER_SECRET: &str = "test-cluster-secret-xyz";
 
 struct ProxyPair {
     _node_a: Child,
-    _cfg_a:  NamedTempFile,
+    _cfg_a: NamedTempFile,
     _node_b: Child,
-    _cfg_b:  NamedTempFile,
+    _cfg_b: NamedTempFile,
 }
 
 unsafe impl Sync for ProxyPair {}
@@ -100,9 +122,9 @@ fn mysql_available() -> bool {
 
 fn pg_available() -> bool {
     let mut cfg = PgConfig::new();
-    cfg.host(&pg_host())
+    cfg.host(pg_host())
         .port(pg_port())
-        .user(&pg_user())
+        .user(pg_user())
         .password(pg_pass().as_bytes())
         .dbname(PG_DB)
         .connect_timeout(Duration::from_secs(3));
@@ -112,14 +134,16 @@ fn pg_available() -> bool {
 fn ensure_cluster() -> bool {
     *CLUSTER.get_or_init(|| {
         let mysql_ok = mysql_available();
-        let pg_ok    = pg_available();
+        let pg_ok = pg_available();
         if !mysql_ok {
             eprintln!("SKIP: MySQL unreachable. docker compose up mysql80 -d");
         }
         if !pg_ok {
             eprintln!("SKIP: PostgreSQL unreachable. docker compose up postgres16 -d");
         }
-        if !mysql_ok || !pg_ok { return false; }
+        if !mysql_ok || !pg_ok {
+            return false;
+        }
         Box::leak(Box::new(start_cluster()));
         true
     })
@@ -127,9 +151,9 @@ fn ensure_cluster() -> bool {
 
 fn write_node_config(
     mysql_proxy_port: u16,
-    pg_proxy_port:    u16,
-    dashboard_port:   u16,
-    peer_dashboard:   u16,
+    pg_proxy_port: u16,
+    dashboard_port: u16,
+    peer_dashboard: u16,
 ) -> NamedTempFile {
     let mut f = NamedTempFile::new().unwrap();
     write!(
@@ -175,7 +199,7 @@ database = "{pg_db}"
         mysql_port = mysql_port(),
         mysql_user = mysql_user(),
         mysql_pass = mysql_pass(),
-        mysql_db   = MYSQL_DB,
+        mysql_db = MYSQL_DB,
         dashboard_port = dashboard_port,
         peer_dashboard = peer_dashboard,
         secret = CLUSTER_SECRET,
@@ -184,7 +208,7 @@ database = "{pg_db}"
         pg_port = pg_port(),
         pg_user = pg_user(),
         pg_pass = pg_pass(),
-        pg_db   = PG_DB,
+        pg_db = PG_DB,
     )
     .unwrap();
     f
@@ -223,7 +247,7 @@ fn wait_pg_proxy(port: u16) {
         let mut cfg = PgConfig::new();
         cfg.host("127.0.0.1")
             .port(port)
-            .user(&pg_user())
+            .user(pg_user())
             .password(pg_pass().as_bytes())
             .dbname(PG_DB)
             .connect_timeout(Duration::from_secs(1));
@@ -239,9 +263,7 @@ fn wait_dashboard(port: u16) {
     for attempt in 0..75 {
         std::thread::sleep(Duration::from_millis(200));
         if rt()
-            .block_on(async {
-                reqwest::get(format!("http://127.0.0.1:{port}/health")).await
-            })
+            .block_on(async { reqwest::get(format!("http://127.0.0.1:{port}/health")).await })
             .is_ok()
         {
             eprintln!("Dashboard :{port} ready after ~{}ms", (attempt + 1) * 200);
@@ -266,7 +288,12 @@ fn start_cluster() -> ProxyPair {
     wait_dashboard(DASHBOARD_A);
     wait_dashboard(DASHBOARD_B);
 
-    ProxyPair { _node_a: node_a, _cfg_a: cfg_a, _node_b: node_b, _cfg_b: cfg_b }
+    ProxyPair {
+        _node_a: node_a,
+        _cfg_a: cfg_a,
+        _node_b: node_b,
+        _cfg_b: cfg_b,
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -285,7 +312,7 @@ async fn pg_client(port: u16) -> tokio_postgres::Client {
     let mut cfg = PgConfig::new();
     cfg.host("127.0.0.1")
         .port(port)
-        .user(&pg_user())
+        .user(pg_user())
         .password(pg_pass().as_bytes())
         .dbname(PG_DB)
         .connect_timeout(Duration::from_secs(5));
@@ -296,7 +323,9 @@ async fn pg_client(port: u16) -> tokio_postgres::Client {
 
 macro_rules! require_cluster {
     () => {
-        if !ensure_cluster() { return; }
+        if !ensure_cluster() {
+            return;
+        }
     };
 }
 
@@ -324,14 +353,17 @@ fn cluster_mysql_both_nodes_consistent_dml() {
     let mut ca = mysql_conn(MYSQL_PROXY_A);
     let mut cb = mysql_conn(MYSQL_PROXY_B);
 
-    ca.query_drop("DROP TABLE IF EXISTS `cluster_test_mysql`").unwrap();
+    ca.query_drop("DROP TABLE IF EXISTS `cluster_test_mysql`")
+        .unwrap();
     ca.query_drop(
         "CREATE TABLE `cluster_test_mysql` \
          (id INT AUTO_INCREMENT PRIMARY KEY, val VARCHAR(64)) ENGINE=InnoDB",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Write via node A.
-    ca.query_drop("INSERT INTO `cluster_test_mysql` (val) VALUES ('from_node_a')").unwrap();
+    ca.query_drop("INSERT INTO `cluster_test_mysql` (val) VALUES ('from_node_a')")
+        .unwrap();
 
     // Read via node B — both hit the same backend DB.
     let rows: Vec<String> = cb.query("SELECT val FROM `cluster_test_mysql`").unwrap();
@@ -371,13 +403,24 @@ fn cluster_pg_both_nodes_consistent_dml() {
             "CREATE TABLE IF NOT EXISTS cluster_test_pg \
              (id SERIAL PRIMARY KEY, val TEXT)",
             &[],
-        ).await.unwrap();
-        ca.execute("TRUNCATE cluster_test_pg RESTART IDENTITY", &[]).await.unwrap();
+        )
+        .await
+        .unwrap();
+        ca.execute("TRUNCATE cluster_test_pg RESTART IDENTITY", &[])
+            .await
+            .unwrap();
 
-        ca.execute("INSERT INTO cluster_test_pg (val) VALUES ($1)", &[&"from_node_a"])
-            .await.unwrap();
+        ca.execute(
+            "INSERT INTO cluster_test_pg (val) VALUES ($1)",
+            &[&"from_node_a"],
+        )
+        .await
+        .unwrap();
 
-        let row = cb.query_one("SELECT val FROM cluster_test_pg", &[]).await.unwrap();
+        let row = cb
+            .query_one("SELECT val FROM cluster_test_pg", &[])
+            .await
+            .unwrap();
         assert_eq!(row.get::<_, String>(0), "from_node_a");
     });
 }
@@ -423,7 +466,7 @@ enabled = false
             mysql_port = mysql_port(),
             mysql_user = mysql_user(),
             mysql_pass = mysql_pass(),
-            mysql_db   = MYSQL_DB,
+            mysql_db = MYSQL_DB,
             dashboard_port = DASHBOARD_B,
             peer_dashboard = DASHBOARD_A,
             secret = CLUSTER_SECRET,
@@ -564,7 +607,10 @@ fn cluster_config_status_endpoint() {
         assert!(resp.status().is_success());
         let body: serde_json::Value = resp.json().await.unwrap();
         // "modified" key must exist (bool).
-        assert!(body["modified"].is_boolean(), "config/status must have 'modified' bool");
+        assert!(
+            body["modified"].is_boolean(),
+            "config/status must have 'modified' bool"
+        );
     });
 }
 
@@ -576,14 +622,24 @@ fn cluster_concurrent_mixed_load() {
     // 4 MySQL threads (2 per node) + 4 PgSQL threads (2 per node) in parallel.
     let mut handles = Vec::new();
 
-    for (i, port) in [(0, MYSQL_PROXY_A), (1, MYSQL_PROXY_A), (2, MYSQL_PROXY_B), (3, MYSQL_PROXY_B)] {
+    for (i, port) in [
+        (0, MYSQL_PROXY_A),
+        (1, MYSQL_PROXY_A),
+        (2, MYSQL_PROXY_B),
+        (3, MYSQL_PROXY_B),
+    ] {
         handles.push(std::thread::spawn(move || {
             let mut c = mysql_conn(port);
             let r: Vec<i32> = c.query(format!("SELECT {i} AS n")).unwrap();
             assert_eq!(r, vec![i]);
         }));
     }
-    for (i, port) in [(10, PG_PROXY_A), (11, PG_PROXY_A), (12, PG_PROXY_B), (13, PG_PROXY_B)] {
+    for (i, port) in [
+        (10, PG_PROXY_A),
+        (11, PG_PROXY_A),
+        (12, PG_PROXY_B),
+        (13, PG_PROXY_B),
+    ] {
         handles.push(std::thread::spawn(move || {
             rt().block_on(async move {
                 let c = pg_client(port).await;
@@ -593,5 +649,7 @@ fn cluster_concurrent_mixed_load() {
         }));
     }
 
-    for h in handles { h.join().expect("thread panicked"); }
+    for h in handles {
+        h.join().expect("thread panicked");
+    }
 }

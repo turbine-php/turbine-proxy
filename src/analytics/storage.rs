@@ -32,7 +32,9 @@ impl AnalyticsStorage {
         let conn = Connection::open(db_path)
             .with_context(|| format!("Opening analytics DB at '{db_path}'"))?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Flush a batch of in-memory stats to SQLite.
@@ -86,7 +88,8 @@ impl AnalyticsStorage {
              FROM query_stats ORDER BY count DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], row_to_stats)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     // TODO: used by dashboard /api/slow-queries endpoint
@@ -99,7 +102,8 @@ impl AnalyticsStorage {
              FROM query_stats ORDER BY p95_us DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], row_to_stats)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     /// Returns the sum of all `count` rows — used at startup to restore the
@@ -107,7 +111,9 @@ impl AnalyticsStorage {
     pub fn load_total_query_count(&self) -> Result<u64> {
         let conn = self.conn.lock().unwrap();
         let n: i64 = conn
-            .query_row("SELECT COALESCE(SUM(count), 0) FROM query_stats", [], |r| r.get(0))
+            .query_row("SELECT COALESCE(SUM(count), 0) FROM query_stats", [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         Ok(n.max(0) as u64)
     }

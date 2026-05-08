@@ -3,8 +3,8 @@
 //! `GET /api/errors?limit=N&code=X&protocol=postgres`  — list recent error events
 //! `GET /api/errors/stats`                              — counts by category (1h / 24h / 7d)
 
-use axum::Json;
 use axum::extract::{Query, State};
+use axum::Json;
 use serde::Deserialize;
 
 use crate::dashboard::AppState;
@@ -14,7 +14,9 @@ fn normalize_protocol(raw: Option<&str>) -> Result<Option<&'static str>, String>
         "" | "auto" => Ok(None),
         "mysql" => Ok(Some("mysql")),
         "pgsql" | "postgres" | "postgresql" => Ok(Some("postgres")),
-        other => Err(format!("invalid protocol '{other}' (use mysql, pgsql, or auto)")),
+        other => Err(format!(
+            "invalid protocol '{other}' (use mysql, pgsql, or auto)"
+        )),
     }
 }
 
@@ -30,7 +32,9 @@ pub struct ListErrorsParams {
     pub protocol: Option<String>,
 }
 
-fn default_limit() -> usize { 100 }
+fn default_limit() -> usize {
+    100
+}
 
 /// `GET /api/errors` — return most recent error events.
 pub async fn list_errors(
@@ -44,7 +48,9 @@ pub async fn list_errors(
         }
     };
 
-    let mut events = state.error_events.list_filtered(params.limit.min(1_000), protocol);
+    let mut events = state
+        .error_events
+        .list_filtered(params.limit.min(1_000), protocol);
 
     if let Some(code) = params.code {
         events.retain(|e| e.code == code);

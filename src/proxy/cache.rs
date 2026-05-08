@@ -30,7 +30,7 @@ const NON_DETERMINISTIC: &[&str] = &[
     "RAND()",
     "UUID()",
     "LAST_INSERT_ID()",
-    "@",   // user/session variables
+    "@", // user/session variables
 ];
 
 // ─── CacheEntry ───────────────────────────────────────────────────────────────
@@ -135,9 +135,9 @@ impl QueryCache {
             return;
         }
         let mut inner = self.inner.lock().await;
-        inner.entries.retain(|_, entry| {
-            !entry.tables.iter().any(|t| tables.contains(t))
-        });
+        inner
+            .entries
+            .retain(|_, entry| !entry.tables.iter().any(|t| tables.contains(t)));
     }
 
     /// Current (hits, misses) counters — for dashboard metrics.
@@ -201,15 +201,9 @@ mod tests {
     #[tokio::test]
     async fn test_table_invalidation() {
         let cache = QueryCache::with_defaults();
-        cache
-            .put("SELECT * FROM orders", b"orders".to_vec())
-            .await;
-        cache
-            .put("SELECT * FROM users", b"users".to_vec())
-            .await;
-        cache
-            .invalidate_tables(&["orders".to_string()])
-            .await;
+        cache.put("SELECT * FROM orders", b"orders".to_vec()).await;
+        cache.put("SELECT * FROM users", b"users".to_vec()).await;
+        cache.invalidate_tables(&["orders".to_string()]).await;
         assert!(cache.get("SELECT * FROM orders").await.is_none());
         assert!(cache.get("SELECT * FROM users").await.is_some());
     }

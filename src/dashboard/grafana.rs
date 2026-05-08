@@ -93,8 +93,12 @@ pub struct Target {
     pub kind: String,
 }
 
-fn default_max_datapoints() -> usize { 500 }
-fn default_target_type() -> String { "timeserie".to_string() }
+fn default_max_datapoints() -> usize {
+    500
+}
+fn default_target_type() -> String {
+    "timeserie".to_string()
+}
 
 /// A single time-series result.
 #[derive(Serialize)]
@@ -109,8 +113,8 @@ pub async fn query(
     Json(req): Json<QueryRequest>,
 ) -> Json<Vec<TimeserieResult>> {
     let from_unix = parse_iso_to_unix_secs(&req.range.from).unwrap_or(0);
-    let to_unix   = parse_iso_to_unix_secs(&req.range.to)
-        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let to_unix =
+        parse_iso_to_unix_secs(&req.range.to).unwrap_or_else(|| chrono::Utc::now().timestamp());
 
     // Choose resolution automatically based on the requested range.
     let range_secs = (to_unix - from_unix).max(1);
@@ -130,16 +134,18 @@ pub async fn query(
                         let pts = ts
                             .query_range(resolution, from_unix, to_unix, req.max_datapoints)
                             .unwrap_or_default();
-                        pts.iter().map(|p| {
-                            let val = match name {
-                                "queries"         => p.queries as f64,
-                                "slow_queries"    => p.slow_queries as f64,
-                                "avg_latency_ms"  => p.avg_us / 1_000.0,
-                                "max_latency_ms"  => p.max_us as f64 / 1_000.0,
-                                _                 => 0.0,
-                            };
-                            [val, (p.bucket_unix * 1000) as f64]
-                        }).collect()
+                        pts.iter()
+                            .map(|p| {
+                                let val = match name {
+                                    "queries" => p.queries as f64,
+                                    "slow_queries" => p.slow_queries as f64,
+                                    "avg_latency_ms" => p.avg_us / 1_000.0,
+                                    "max_latency_ms" => p.max_us as f64 / 1_000.0,
+                                    _ => 0.0,
+                                };
+                                [val, (p.bucket_unix * 1000) as f64]
+                            })
+                            .collect()
                     }
                 }
             }
@@ -211,10 +217,13 @@ pub async fn annotations(
     Json(req): Json<AnnotationsRequest>,
 ) -> Json<Vec<Annotation>> {
     let from_ms = parse_iso_to_unix_secs(&req.range.from).unwrap_or(0) * 1000;
-    let to_ms   = parse_iso_to_unix_secs(&req.range.to)
-        .unwrap_or_else(|| chrono::Utc::now().timestamp()) * 1000;
+    let to_ms = parse_iso_to_unix_secs(&req.range.to)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp())
+        * 1000;
 
-    let meta = AnnotationMeta { name: req.annotation.name.clone() };
+    let meta = AnnotationMeta {
+        name: req.annotation.name.clone(),
+    };
 
     let alerts = state.regression_store.snapshot();
     let items: Vec<Annotation> = alerts
@@ -225,9 +234,11 @@ pub async fn annotations(
         })
         .map(|a| {
             let kind_str = match &a.details {
-                crate::proxy::regression::AlertKind::LatencyRegression { .. } => "latency_regression",
-                crate::proxy::regression::AlertKind::HotKey { .. }            => "hot_key",
-                crate::proxy::regression::AlertKind::FullScanRisk { .. }      => "full_scan_risk",
+                crate::proxy::regression::AlertKind::LatencyRegression { .. } => {
+                    "latency_regression"
+                }
+                crate::proxy::regression::AlertKind::HotKey { .. } => "hot_key",
+                crate::proxy::regression::AlertKind::FullScanRisk { .. } => "full_scan_risk",
             };
             let title = format!(
                 "[{}] {}",
@@ -235,18 +246,32 @@ pub async fn annotations(
                 &a.fingerprint[..a.fingerprint.len().min(60)]
             );
             let text = match &a.details {
-                crate::proxy::regression::AlertKind::LatencyRegression { baseline_p95_us, current_p95_us, ratio } =>
-                    format!("p95 {:.1}ms → {:.1}ms (+{:.0}%)",
-                        *baseline_p95_us as f64 / 1_000.0,
-                        *current_p95_us as f64 / 1_000.0,
-                        (ratio - 1.0) * 100.0),
-                crate::proxy::regression::AlertKind::HotKey { example_sql, hit_count } =>
-                    format!("{}× — {}", hit_count, &example_sql[..example_sql.len().min(120)]),
-                crate::proxy::regression::AlertKind::FullScanRisk { reason, call_count } =>
-                    format!("{} ({} calls)", reason, call_count),
+                crate::proxy::regression::AlertKind::LatencyRegression {
+                    baseline_p95_us,
+                    current_p95_us,
+                    ratio,
+                } => format!(
+                    "p95 {:.1}ms → {:.1}ms (+{:.0}%)",
+                    *baseline_p95_us as f64 / 1_000.0,
+                    *current_p95_us as f64 / 1_000.0,
+                    (ratio - 1.0) * 100.0
+                ),
+                crate::proxy::regression::AlertKind::HotKey {
+                    example_sql,
+                    hit_count,
+                } => format!(
+                    "{}× — {}",
+                    hit_count,
+                    &example_sql[..example_sql.len().min(120)]
+                ),
+                crate::proxy::regression::AlertKind::FullScanRisk { reason, call_count } => {
+                    format!("{} ({} calls)", reason, call_count)
+                }
             };
             let mut tags = vec![kind_str.to_string()];
-            if a.resolved { tags.push("resolved".to_string()); }
+            if a.resolved {
+                tags.push("resolved".to_string());
+            }
 
             Annotation {
                 annotation: meta.clone(),
@@ -271,8 +296,14 @@ pub struct TagKey {
 
 pub async fn tag_keys() -> Json<Vec<TagKey>> {
     Json(vec![
-        TagKey { r#type: "string", text: "metric" },
-        TagKey { r#type: "string", text: "resolution" },
+        TagKey {
+            r#type: "string",
+            text: "metric",
+        },
+        TagKey {
+            r#type: "string",
+            text: "resolution",
+        },
     ])
 }
 
@@ -291,14 +322,27 @@ pub struct TagValueItem {
 pub async fn tag_values(Json(req): Json<TagValuesRequest>) -> Json<Vec<TagValueItem>> {
     let values: &[&str] = match req.key.as_str() {
         "metric" => &[
-            "queries", "slow_queries", "avg_latency_ms", "max_latency_ms",
-            "connections_active", "connections_total",
-            "queries_total", "queries_read", "queries_write",
+            "queries",
+            "slow_queries",
+            "avg_latency_ms",
+            "max_latency_ms",
+            "connections_active",
+            "connections_total",
+            "queries_total",
+            "queries_read",
+            "queries_write",
         ],
         "resolution" => &["1m", "1h", "1d"],
         _ => &[],
     };
-    Json(values.iter().map(|v| TagValueItem { text: v.to_string() }).collect())
+    Json(
+        values
+            .iter()
+            .map(|v| TagValueItem {
+                text: v.to_string(),
+            })
+            .collect(),
+    )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -315,7 +359,7 @@ fn parse_iso_to_unix_secs(s: &str) -> Option<i64> {
 /// - range ≤ 7 days and budget ≥ 24  → `"1h"`
 /// - otherwise                        → `"1d"`
 fn auto_resolution(range_secs: i64, max_points: usize) -> &'static str {
-    const TWO_HOURS:  i64 = 2 * 3600;
+    const TWO_HOURS: i64 = 2 * 3600;
     const SEVEN_DAYS: i64 = 7 * 86400;
     if range_secs <= TWO_HOURS && max_points >= 120 {
         "1m"

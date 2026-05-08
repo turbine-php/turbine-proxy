@@ -33,8 +33,8 @@ pub struct QueryStats {
     latencies: Vec<Duration>,
     /// Serialisable duration summaries (µs).
     pub total_us: u64,
-    pub min_us:   u64,
-    pub max_us:   u64,
+    pub min_us: u64,
+    pub max_us: u64,
 }
 
 impl QueryStats {
@@ -60,9 +60,9 @@ impl QueryStats {
         self.min_duration = self.min_duration.min(duration);
         self.max_duration = self.max_duration.max(duration);
         let us = duration.as_micros() as u64;
-        self.total_us  = self.total_us.saturating_add(us);
-        self.min_us    = self.min_us.min(us);
-        self.max_us    = self.max_us.max(us);
+        self.total_us = self.total_us.saturating_add(us);
+        self.min_us = self.min_us.min(us);
+        self.max_us = self.max_us.max(us);
         self.last_seen = chrono::Utc::now();
         // Keep the last 1 000 samples — enough for stable p95/p99.
         if self.latencies.len() >= 1_000 {
@@ -122,7 +122,11 @@ impl Collector {
 
         tokio::spawn(aggregation_loop(rx, stats_bg, slow_threshold));
 
-        Self { sender: tx, stats, advisor: None }
+        Self {
+            sender: tx,
+            stats,
+            advisor: None,
+        }
     }
 
     /// Attach an `AdvisorTask` so that slow queries are forwarded for EXPLAIN analysis.
@@ -134,14 +138,23 @@ impl Collector {
     /// Record a query from the hot path. **Never blocks** — drops the event if
     /// the channel is full to avoid stalling the query.
     pub fn try_record(&self, sql: &str, duration: Duration, _was_read: bool) {
-        let event = QueryEvent { sql: sql.to_owned(), duration };
+        let event = QueryEvent {
+            sql: sql.to_owned(),
+            duration,
+        };
         // Intentional discard: metrics are best-effort, queries are not.
         let _ = self.sender.try_send(event);
     }
 
     /// Forward a slow query to the index advisor (if attached). Never blocks.
     #[allow(dead_code)]
-    pub fn try_advise(&self, sql: &str, fingerprint: &str, slow_threshold: Duration, duration: Duration) {
+    pub fn try_advise(
+        &self,
+        sql: &str,
+        fingerprint: &str,
+        slow_threshold: Duration,
+        duration: Duration,
+    ) {
         if duration >= slow_threshold {
             if let Some(advisor) = &self.advisor {
                 advisor.try_submit(sql.to_owned(), fingerprint.to_owned());
@@ -169,7 +182,7 @@ impl Collector {
     #[allow(dead_code)]
     pub async fn get_slow_queries(&self, limit: usize) -> Vec<QueryStats> {
         let mut stats = self.get_stats().await;
-        stats.sort_by(|a, b| b.p95().cmp(&a.p95()));
+        stats.sort_by_key(|b| std::cmp::Reverse(b.p95()));
         stats.truncate(limit);
         stats
     }
@@ -211,4 +224,3 @@ fn percentile(latencies: &[Duration], pct: usize) -> Duration {
     let idx = (sorted.len() * pct / 100).min(sorted.len() - 1);
     sorted[idx]
 }
-

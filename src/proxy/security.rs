@@ -126,7 +126,11 @@ impl AuditLogger {
         let file = if path.is_empty() {
             None
         } else {
-            match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 Ok(f) => Some(f),
                 Err(e) => {
                     log::error!("[audit] failed to open {}: {}", path, e);
@@ -154,9 +158,17 @@ impl AuditLogger {
         if inner.path.is_empty() {
             return;
         }
-        match std::fs::OpenOptions::new().create(true).append(true).open(&inner.path) {
-            Ok(f) => { inner.file = Some(f); }
-            Err(e) => { log::error!("[audit] reopen {} failed: {}", inner.path, e); }
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&inner.path)
+        {
+            Ok(f) => {
+                inner.file = Some(f);
+            }
+            Err(e) => {
+                log::error!("[audit] reopen {} failed: {}", inner.path, e);
+            }
         }
     }
 
@@ -178,7 +190,10 @@ impl AuditLogger {
 
         // Minimal JSON serialisation — avoids pulling in serde_json on the hot path.
         // We only escape the characters that break JSON string safety.
-        let safe_sql = sql.replace('\\', r"\\").replace('"', r#"\""#).replace('\n', r"\n");
+        let safe_sql = sql
+            .replace('\\', r"\\")
+            .replace('"', r#"\""#)
+            .replace('\n', r"\n");
         let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let line = format!(
             "{{\"ts\":\"{ts}\",\"user\":\"{user}\",\"client\":\"{client}\",\

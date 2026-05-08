@@ -30,7 +30,9 @@ pub struct CreateBackendBody {
     #[serde(default)]
     pub database: Option<String>,
 }
-fn default_weight() -> i64 { 100 }
+fn default_weight() -> i64 {
+    100
+}
 use crate::dashboard::AppState;
 
 fn backend_protocol(raw: Option<&str>) -> Result<&'static str, String> {
@@ -57,7 +59,10 @@ fn ok() -> Json<serde_json::Value> {
 }
 
 fn err(msg: impl std::fmt::Display) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "ok": false, "error": msg.to_string() })))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({ "ok": false, "error": msg.to_string() })),
+    )
 }
 
 /// Bump the config mutation timestamp so the unsaved-changes badge appears.
@@ -85,8 +90,8 @@ pub async fn create_config_rule(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
     let ip = client_ip(&headers);
-    let id = store.create_rule(&row, &ip).map_err(|e| err(e))?;
-    apply_rules(&s).await.map_err(|e| err(e))?;
+    let id = store.create_rule(&row, &ip).map_err(err)?;
+    apply_rules(&s).await.map_err(err)?;
     bump_mutation(&s);
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
@@ -99,8 +104,8 @@ pub async fn update_config_rule(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
     let ip = client_ip(&headers);
-    store.update_rule(id, &row, &ip).map_err(|e| err(e))?;
-    apply_rules(&s).await.map_err(|e| err(e))?;
+    store.update_rule(id, &row, &ip).map_err(err)?;
+    apply_rules(&s).await.map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -112,8 +117,8 @@ pub async fn delete_config_rule(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
     let ip = client_ip(&headers);
-    store.delete_rule(id, &ip).map_err(|e| err(e))?;
-    apply_rules(&s).await.map_err(|e| err(e))?;
+    store.delete_rule(id, &ip).map_err(err)?;
+    apply_rules(&s).await.map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -136,8 +141,8 @@ pub async fn create_config_rewrite_rule(
         return Err(err(format!("Invalid regex: {e}")));
     }
     let ip = client_ip(&headers);
-    let id = store.create_rewrite_rule(&row, &ip).map_err(|e| err(e))?;
-    apply_rewrite_rules(&s).map_err(|e| err(e))?;
+    let id = store.create_rewrite_rule(&row, &ip).map_err(err)?;
+    apply_rewrite_rules(&s).map_err(err)?;
     bump_mutation(&s);
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
@@ -153,8 +158,8 @@ pub async fn update_config_rewrite_rule(
         return Err(err(format!("Invalid regex: {e}")));
     }
     let ip = client_ip(&headers);
-    store.update_rewrite_rule(id, &row, &ip).map_err(|e| err(e))?;
-    apply_rewrite_rules(&s).map_err(|e| err(e))?;
+    store.update_rewrite_rule(id, &row, &ip).map_err(err)?;
+    apply_rewrite_rules(&s).map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -166,8 +171,8 @@ pub async fn delete_config_rewrite_rule(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
     let ip = client_ip(&headers);
-    store.delete_rewrite_rule(id, &ip).map_err(|e| err(e))?;
-    apply_rewrite_rules(&s).map_err(|e| err(e))?;
+    store.delete_rewrite_rule(id, &ip).map_err(err)?;
+    apply_rewrite_rules(&s).map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -179,8 +184,10 @@ pub async fn list_config_backends(
     Query(params): Query<BackendProtocolQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
-    let protocol = backend_protocol(params.protocol.as_deref()).map_err(|e| err(e))?;
-    let rows = store.list_backends_by_protocol(protocol).unwrap_or_default();
+    let protocol = backend_protocol(params.protocol.as_deref()).map_err(err)?;
+    let rows = store
+        .list_backends_by_protocol(protocol)
+        .unwrap_or_default();
     // Mask passwords before returning.
     let masked: Vec<serde_json::Value> = rows
         .into_iter()
@@ -204,7 +211,7 @@ pub async fn create_config_backend(
     Json(body): Json<CreateBackendBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
-    let protocol = backend_protocol(params.protocol.as_deref()).map_err(|e| err(e))?;
+    let protocol = backend_protocol(params.protocol.as_deref()).map_err(err)?;
     let ip = client_ip(&headers);
     let row = BackendRow {
         id: 0,
@@ -220,8 +227,10 @@ pub async fn create_config_backend(
     };
     let id = store
         .create_backend_with_protocol(&row, &ip, protocol)
-        .map_err(|e| err(e))?;
-    apply_backends_for_protocol(&s, protocol).await.map_err(|e| err(e))?;
+        .map_err(err)?;
+    apply_backends_for_protocol(&s, protocol)
+        .await
+        .map_err(err)?;
     bump_mutation(&s);
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
@@ -234,12 +243,14 @@ pub async fn update_config_backend(
     Json(row): Json<BackendRow>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
-    let protocol = backend_protocol(params.protocol.as_deref()).map_err(|e| err(e))?;
+    let protocol = backend_protocol(params.protocol.as_deref()).map_err(err)?;
     let ip = client_ip(&headers);
     store
         .update_backend_with_protocol(id, &row, &ip, protocol)
-        .map_err(|e| err(e))?;
-    apply_backends_for_protocol(&s, protocol).await.map_err(|e| err(e))?;
+        .map_err(err)?;
+    apply_backends_for_protocol(&s, protocol)
+        .await
+        .map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -251,12 +262,14 @@ pub async fn delete_config_backend(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
-    let protocol = backend_protocol(params.protocol.as_deref()).map_err(|e| err(e))?;
+    let protocol = backend_protocol(params.protocol.as_deref()).map_err(err)?;
     let ip = client_ip(&headers);
     store
         .delete_backend_with_protocol(id, &ip, protocol)
-        .map_err(|e| err(e))?;
-    apply_backends_for_protocol(&s, protocol).await.map_err(|e| err(e))?;
+        .map_err(err)?;
+    apply_backends_for_protocol(&s, protocol)
+        .await
+        .map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -287,7 +300,7 @@ pub async fn create_config_user(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
     let ip = client_ip(&headers);
-    let id = store.create_user(&row, &ip).map_err(|e| err(e))?;
+    let id = store.create_user(&row, &ip).map_err(err)?;
     bump_mutation(&s);
     Ok(Json(serde_json::json!({ "ok": true, "id": id })))
 }
@@ -300,7 +313,7 @@ pub async fn update_config_user(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
     let ip = client_ip(&headers);
-    store.update_user(id, &row, &ip).map_err(|e| err(e))?;
+    store.update_user(id, &row, &ip).map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -312,7 +325,7 @@ pub async fn delete_config_user(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let store = s.config_store.as_ref().unwrap();
     let ip = client_ip(&headers);
-    store.delete_user(id, &ip).map_err(|e| err(e))?;
+    store.delete_user(id, &ip).map_err(err)?;
     bump_mutation(&s);
     Ok(ok())
 }
@@ -325,7 +338,9 @@ pub struct HistoryParams {
     limit: i64,
 }
 
-fn default_limit() -> i64 { 50 }
+fn default_limit() -> i64 {
+    50
+}
 
 pub async fn config_history(
     State(s): State<AppState>,
@@ -365,11 +380,11 @@ pub async fn import_config(
             &cfg.users,
             &ip,
         )
-        .map_err(|e| err(e))?;
+        .map_err(err)?;
 
     // Hot-reload in-memory engines.
-    apply_rules(&s).await.map_err(|e| err(e))?;
-    apply_rewrite_rules(&s).map_err(|e| err(e))?;
+    apply_rules(&s).await.map_err(err)?;
+    apply_rewrite_rules(&s).map_err(err)?;
 
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -402,22 +417,40 @@ pub async fn export_config(State(s): State<AppState>) -> (StatusCode, String) {
 
     for r in &rules {
         out.push_str("[[query_rules]]\n");
-        if let Some(p) = &r.match_pattern { out.push_str(&format!("match_pattern = {p:?}\n")); }
-        if let Some(d) = &r.match_digest { out.push_str(&format!("match_digest = {d:?}\n")); }
-        if !r.user.is_empty() { out.push_str(&format!("user = {:?}\n", r.user)); }
+        if let Some(p) = &r.match_pattern {
+            out.push_str(&format!("match_pattern = {p:?}\n"));
+        }
+        if let Some(d) = &r.match_digest {
+            out.push_str(&format!("match_digest = {d:?}\n"));
+        }
+        if !r.user.is_empty() {
+            out.push_str(&format!("user = {:?}\n", r.user));
+        }
         out.push_str(&format!("destination = {:?}\n", r.destination));
-        if !r.comment.is_empty() { out.push_str(&format!("comment = {:?}\n", r.comment)); }
+        if !r.comment.is_empty() {
+            out.push_str(&format!("comment = {:?}\n", r.comment));
+        }
         out.push('\n');
     }
 
     for r in &rw_rules {
         out.push_str("[[rewrite_rules]]\n");
         out.push_str(&format!("match_pattern = {:?}\n", r.match_pattern));
-        if let Some(v) = &r.replace_with { out.push_str(&format!("replace_with = {v:?}\n")); }
-        if let Some(v) = r.add_limit { out.push_str(&format!("add_limit = {v}\n")); }
-        if let Some(v) = r.add_timeout_ms { out.push_str(&format!("add_timeout_ms = {v}\n")); }
-        if r.block { out.push_str("block = true\n"); }
-        if !r.comment.is_empty() { out.push_str(&format!("comment = {:?}\n", r.comment)); }
+        if let Some(v) = &r.replace_with {
+            out.push_str(&format!("replace_with = {v:?}\n"));
+        }
+        if let Some(v) = r.add_limit {
+            out.push_str(&format!("add_limit = {v}\n"));
+        }
+        if let Some(v) = r.add_timeout_ms {
+            out.push_str(&format!("add_timeout_ms = {v}\n"));
+        }
+        if r.block {
+            out.push_str("block = true\n");
+        }
+        if !r.comment.is_empty() {
+            out.push_str(&format!("comment = {:?}\n", r.comment));
+        }
         out.push('\n');
     }
 
@@ -430,8 +463,12 @@ pub async fn export_config(State(s): State<AppState>) -> (StatusCode, String) {
         out.push_str(&format!("addr = {:?}\n", b.addr));
         out.push_str(&format!("user = {:?}\n", b.user));
         out.push_str("password = \"***\"  # passwords are not exported for security\n");
-        if b.backup { out.push_str("backup = true\n"); }
-        if b.weight != 100 { out.push_str(&format!("weight = {}\n", b.weight)); }
+        if b.backup {
+            out.push_str("backup = true\n");
+        }
+        if b.weight != 100 {
+            out.push_str(&format!("weight = {}\n", b.weight));
+        }
         out.push('\n');
     }
 
@@ -439,8 +476,12 @@ pub async fn export_config(State(s): State<AppState>) -> (StatusCode, String) {
         out.push_str("[[users]]\n");
         out.push_str(&format!("name = {:?}\n", u.name));
         out.push_str("password = \"***\"  # passwords are not exported for security\n");
-        if !u.allow_writes { out.push_str("allow_writes = false\n"); }
-        if u.max_connections > 0 { out.push_str(&format!("max_connections = {}\n", u.max_connections)); }
+        if !u.allow_writes {
+            out.push_str("allow_writes = false\n");
+        }
+        if u.max_connections > 0 {
+            out.push_str(&format!("max_connections = {}\n", u.max_connections));
+        }
         out.push('\n');
     }
 
@@ -455,8 +496,12 @@ pub async fn export_config(State(s): State<AppState>) -> (StatusCode, String) {
 /// performed since the last export, i.e. there are in-DB changes not yet
 /// reflected in `turbineproxy.toml`.
 pub async fn config_status(State(s): State<AppState>) -> Json<serde_json::Value> {
-    let export_ts   = s.config_export_ts.load(std::sync::atomic::Ordering::Relaxed);
-    let mutation_ts = s.config_mutation_ts.load(std::sync::atomic::Ordering::Relaxed);
+    let export_ts = s
+        .config_export_ts
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let mutation_ts = s
+        .config_mutation_ts
+        .load(std::sync::atomic::Ordering::Relaxed);
     Json(serde_json::json!({ "modified": mutation_ts > export_ts }))
 }
 
@@ -560,4 +605,3 @@ async fn apply_backends_for_protocol(s: &AppState, protocol: &str) -> anyhow::Re
         _ => Err(anyhow::anyhow!("unsupported protocol: {protocol}")),
     }
 }
-

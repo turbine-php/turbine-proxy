@@ -12,31 +12,31 @@ pub mod routes_errors;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
-use crate::analytics::{AnalyticsStorage, Collector};
 use crate::analytics::timeseries::TimeseriesStore;
-use crate::config::ProxyConfig;
+use crate::analytics::{AnalyticsStorage, Collector};
 use crate::config::ConfigStore;
-use crate::proxy::regression::RegressionStore;
+use crate::config::ProxyConfig;
 use crate::proxy::app_analytics::AppAnalyticsStore;
+use crate::proxy::error_events::ErrorEventStore;
 use crate::proxy::heatmap::HeatmapStore;
 use crate::proxy::n1::N1Store;
 use crate::proxy::pool::BackendPool;
+use crate::proxy::regression::RegressionStore;
 use crate::proxy::rewriter::Rewriter;
 use crate::proxy::router::Router as ProxyRouter;
 use crate::proxy::rules::RuleEngine;
 use crate::proxy::server::ProxyMetrics;
 use crate::proxy::tracer::TracerStore;
 use crate::proxy::user_registry::UserRegistry;
-use crate::proxy::error_events::ErrorEventStore;
 
 /// In-memory set of valid session tokens.
 pub type TokenStore = Arc<Mutex<HashSet<String>>>;
@@ -130,14 +130,43 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/regressions", get(routes::regressions))
         .route("/metrics", get(routes::metrics))
         // ── Runtime config store (Fase 0.5) ─────────────────────────────────
-        .route("/api/config/rules", get(routes_config::list_config_rules).post(routes_config::create_config_rule))
-        .route("/api/config/rules/:id", axum::routing::put(routes_config::update_config_rule).delete(routes_config::delete_config_rule))
-        .route("/api/config/rewrite-rules", get(routes_config::list_config_rewrite_rules).post(routes_config::create_config_rewrite_rule))
-        .route("/api/config/rewrite-rules/:id", axum::routing::put(routes_config::update_config_rewrite_rule).delete(routes_config::delete_config_rewrite_rule))
-        .route("/api/config/backends", get(routes_config::list_config_backends).post(routes_config::create_config_backend))
-        .route("/api/config/backends/:id", axum::routing::put(routes_config::update_config_backend).delete(routes_config::delete_config_backend))
-        .route("/api/config/users", get(routes_config::list_config_users).post(routes_config::create_config_user))
-        .route("/api/config/users/:id", axum::routing::put(routes_config::update_config_user).delete(routes_config::delete_config_user))
+        .route(
+            "/api/config/rules",
+            get(routes_config::list_config_rules).post(routes_config::create_config_rule),
+        )
+        .route(
+            "/api/config/rules/:id",
+            axum::routing::put(routes_config::update_config_rule)
+                .delete(routes_config::delete_config_rule),
+        )
+        .route(
+            "/api/config/rewrite-rules",
+            get(routes_config::list_config_rewrite_rules)
+                .post(routes_config::create_config_rewrite_rule),
+        )
+        .route(
+            "/api/config/rewrite-rules/:id",
+            axum::routing::put(routes_config::update_config_rewrite_rule)
+                .delete(routes_config::delete_config_rewrite_rule),
+        )
+        .route(
+            "/api/config/backends",
+            get(routes_config::list_config_backends).post(routes_config::create_config_backend),
+        )
+        .route(
+            "/api/config/backends/:id",
+            axum::routing::put(routes_config::update_config_backend)
+                .delete(routes_config::delete_config_backend),
+        )
+        .route(
+            "/api/config/users",
+            get(routes_config::list_config_users).post(routes_config::create_config_user),
+        )
+        .route(
+            "/api/config/users/:id",
+            axum::routing::put(routes_config::update_config_user)
+                .delete(routes_config::delete_config_user),
+        )
         .route("/api/config/history", get(routes_config::config_history))
         .route("/api/config/export", get(routes_config::export_config))
         .route("/api/config/import", post(routes_config::import_config))
@@ -148,7 +177,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/stats/flush", post(routes::flush_stats))
         .route("/api/config/tls", get(routes::tls_cert_info))
         // ── Config unsaved-changes indicator ─────────────────────────────────
-        .route("/api/config/status",          get(routes_config::config_status))
+        .route("/api/config/status", get(routes_config::config_status))
         // ── Grafana Simple JSON datasource ──────────────────────────────────
         .route("/grafana/", get(grafana::health))
         .route("/grafana/search", post(grafana::search))
@@ -156,7 +185,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/grafana/annotations", post(grafana::annotations))
         .route("/grafana/tag-keys", post(grafana::tag_keys))
         .route("/grafana/tag-values", post(grafana::tag_values))
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .with_state(state);
 
     // Serve built React app — falls back gracefully if dist/ doesn't exist yet.

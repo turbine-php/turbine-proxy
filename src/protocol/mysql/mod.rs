@@ -55,7 +55,7 @@ use crate::proxy::auth_cache::AuthCache;
 use handshake::{HandshakeResponse41, HandshakeV10};
 
 /// Type aliases for boxed async streams — avoids repeating the bounds everywhere.
-type BoxRead  = Box<dyn AsyncRead  + Send + Sync + Unpin>;
+type BoxRead = Box<dyn AsyncRead + Send + Sync + Unpin>;
 type BoxWrite = Box<dyn AsyncWrite + Send + Sync + Unpin>;
 
 // ─── MySQLProtocol ────────────────────────────────────────────────────────────
@@ -72,7 +72,10 @@ pub struct MySQLProtocol {
 impl MySQLProtocol {
     /// Create a protocol instance with a credential cache.
     pub fn with_auth(auth_cache: AuthCache) -> Self {
-        Self { frontend_tls: None, auth_cache: Arc::new(auth_cache) }
+        Self {
+            frontend_tls: None,
+            auth_cache: Arc::new(auth_cache),
+        }
     }
 
     /// Create a protocol instance with both TLS and credential validation.
@@ -98,7 +101,11 @@ impl DatabaseProtocol for MySQLProtocol {
         let challenge_2: [u8; 12] = rand::random();
 
         // Advertise SSL capability only when frontend TLS is configured.
-        let tls_cap = if self.frontend_tls.is_some() { capability::SSL } else { 0 };
+        let tls_cap = if self.frontend_tls.is_some() {
+            capability::SSL
+        } else {
+            0
+        };
 
         let handshake = HandshakeV10 {
             protocol_version: 10,
@@ -119,9 +126,7 @@ impl DatabaseProtocol for MySQLProtocol {
             auth_plugin_name: "mysql_native_password".to_string(),
         };
 
-        codec
-            .write_packet(&mut writer, &handshake.encode())
-            .await?;
+        codec.write_packet(&mut writer, &handshake.encode()).await?;
         writer.flush().await?;
 
         let response_packet = codec.read_packet(&mut reader).await?;
@@ -152,24 +157,22 @@ impl DatabaseProtocol for MySQLProtocol {
                         // TLS configured — perform upgrade then read the real
                         // HandshakeResponse41 over the encrypted channel.
                         let stream = reader.unsplit(writer);
-                        let tls_stream = acceptor
-                            .accept(stream)
-                            .await
-                            .map_err(|e| {
-                                ProtocolError::AuthFailed(format!("TLS handshake failed: {}", e))
-                            })?;
+                        let tls_stream = acceptor.accept(stream).await.map_err(|e| {
+                            ProtocolError::AuthFailed(format!("TLS handshake failed: {}", e))
+                        })?;
 
                         let (mut tls_reader, mut tls_writer) = tokio::io::split(tls_stream);
 
                         // codec.sequence_id is now 2 (seq 0 sent, seq 1 read).
                         // HandshakeResponse41 comes at seq 2.
-                        let full_response =
-                            codec.read_packet(&mut tls_reader).await?;
+                        let full_response = codec.read_packet(&mut tls_reader).await?;
                         let client_hs = HandshakeResponse41::decode(&full_response)?;
 
                         // Validate credentials.
-                        let challenge: Vec<u8> = [challenge_1.as_slice(), challenge_2.as_slice()].concat();
-                        let rules = self.auth_cache
+                        let challenge: Vec<u8> =
+                            [challenge_1.as_slice(), challenge_2.as_slice()].concat();
+                        let rules = self
+                            .auth_cache
                             .verify(&client_hs.username, &challenge, &client_hs.auth_response)
                             .await
                             .ok_or_else(|| {
@@ -219,7 +222,8 @@ impl DatabaseProtocol for MySQLProtocol {
 
         // Validate credentials.
         let challenge: Vec<u8> = [challenge_1.as_slice(), challenge_2.as_slice()].concat();
-        let rules = self.auth_cache
+        let rules = self
+            .auth_cache
             .verify(&client_hs.username, &challenge, &client_hs.auth_response)
             .await
             .ok_or_else(|| {
@@ -406,7 +410,11 @@ impl BackendConnection for MySQLBackendConnection {
 
         let bytes = collect_response(&mut self.reader).await?;
         let is_error = bytes.get(4).copied() == Some(0xFF);
-        Ok(BackendResponse { bytes, affected_rows: None, is_error })
+        Ok(BackendResponse {
+            bytes,
+            affected_rows: None,
+            is_error,
+        })
     }
 
     async fn send_raw(&mut self, packet: &[u8]) -> Result<BackendResponse, ProtocolError> {
@@ -416,7 +424,11 @@ impl BackendConnection for MySQLBackendConnection {
 
         let bytes = collect_response(&mut self.reader).await?;
         let is_error = bytes.get(4).copied() == Some(0xFF);
-        Ok(BackendResponse { bytes, affected_rows: None, is_error })
+        Ok(BackendResponse {
+            bytes,
+            affected_rows: None,
+            is_error,
+        })
     }
 
     async fn ping(&mut self) -> Result<(), ProtocolError> {
@@ -467,10 +479,12 @@ async fn mysql_connect(
             .await
             .map_err(ProtocolError::Io)?
             .find(|sa| if want_v4 { sa.is_ipv4() } else { sa.is_ipv6() })
-            .ok_or_else(|| ProtocolError::Io(std::io::Error::new(
-                std::io::ErrorKind::AddrNotAvailable,
-                format!("No {} address found for {}", resolution_family, addr),
-            )))?;
+            .ok_or_else(|| {
+                ProtocolError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AddrNotAvailable,
+                    format!("No {} address found for {}", resolution_family, addr),
+                ))
+            })?;
         TcpStream::connect(sa).await.map_err(ProtocolError::Io)?
     } else {
         TcpStream::connect(addr).await.map_err(ProtocolError::Io)?
@@ -492,7 +506,12 @@ async fn mysql_connect(
     }
     pos += 1; // skip null after server version
 
-    let backend_conn_id = u32::from_le_bytes([hs_packet[pos], hs_packet[pos+1], hs_packet[pos+2], hs_packet[pos+3]]);
+    let backend_conn_id = u32::from_le_bytes([
+        hs_packet[pos],
+        hs_packet[pos + 1],
+        hs_packet[pos + 2],
+        hs_packet[pos + 3],
+    ]);
     pos += 4; // skip connection_id
 
     let mut challenge = Vec::with_capacity(20);
@@ -514,7 +533,10 @@ async fn mysql_connect(
     // and upgrade the stream before continuing with auth.
     let (mut boxed_reader, mut boxed_writer): (BoxRead, BoxWrite) = if *tls_mode != TlsMode::Off {
         if server_caps & capability::SSL == 0 {
-            log::warn!("Backend {} does not advertise SSL; connecting in plain-text", addr);
+            log::warn!(
+                "Backend {} does not advertise SSL; connecting in plain-text",
+                addr
+            );
             let stream = reader.unsplit(writer);
             let (r, w) = tokio::io::split(stream);
             (Box::new(r), Box::new(w))
@@ -528,8 +550,8 @@ async fn mysql_connect(
             let mut ssl_req = bytes::BytesMut::with_capacity(32);
             ssl_req.put_u32_le(ssl_flags);
             ssl_req.put_u32_le(16 * 1024 * 1024); // max_packet_size
-            ssl_req.put_u8(0x21);                  // utf8 charset
-            ssl_req.put_slice(&[0u8; 23]);          // filler
+            ssl_req.put_u8(0x21); // utf8 charset
+            ssl_req.put_slice(&[0u8; 23]); // filler
             codec.write_packet(&mut writer, &ssl_req).await?;
             writer.flush().await?;
 
@@ -538,10 +560,12 @@ async fn mysql_connect(
                 .map_err(|e| ProtocolError::AuthFailed(format!("TLS config: {}", e)))?;
 
             let host = addr.split(':').next().unwrap_or("localhost");
-            let server_name = ServerName::try_from(host.to_owned())
-                .map_err(|_| ProtocolError::AuthFailed(
-                    format!("Invalid TLS server name '{}' — use verify-identity only with a hostname", host)
-                ))?;
+            let server_name = ServerName::try_from(host.to_owned()).map_err(|_| {
+                ProtocolError::AuthFailed(format!(
+                    "Invalid TLS server name '{}' — use verify-identity only with a hostname",
+                    host
+                ))
+            })?;
 
             let stream = reader.unsplit(writer);
             let tls_stream = connector
@@ -601,7 +625,10 @@ async fn mysql_connect(
     let auth_result = codec.read_packet(&mut boxed_reader).await?;
     if auth_result.first().copied() == Some(0xFF) {
         let msg = String::from_utf8_lossy(auth_result.get(9..).unwrap_or_default()).to_string();
-        return Err(ProtocolError::AuthFailed(format!("Backend auth failed: {}", msg)));
+        return Err(ProtocolError::AuthFailed(format!(
+            "Backend auth failed: {}",
+            msg
+        )));
     }
 
     Ok(MySQLBackendConnection {
@@ -693,8 +720,8 @@ pub(crate) async fn collect_response<R: AsyncReadExt + Unpin>(
             0xFB => break, // LOCAL INFILE — terminal
             0x00 => {
                 // OK — check if more result sets follow (multi-statement)
-                let more = ok_status_flags(&payload)
-                    .map_or(false, |f| f & SERVER_MORE_RESULTS_EXISTS != 0);
+                let more =
+                    ok_status_flags(&payload).is_some_and(|f| f & SERVER_MORE_RESULTS_EXISTS != 0);
                 if more {
                     continue; // read next result set in the same response
                 }
@@ -784,7 +811,12 @@ fn framed_packet(seq: u8, payload: &[u8]) -> Vec<u8> {
     v
 }
 
-fn encode_ok_packet(affected_rows: u64, last_insert_id: u64, status: u16, warnings: u16) -> Vec<u8> {
+fn encode_ok_packet(
+    affected_rows: u64,
+    last_insert_id: u64,
+    status: u16,
+    warnings: u16,
+) -> Vec<u8> {
     let mut buf = Vec::with_capacity(16);
     buf.push(0x00);
     encode_lenenc(&mut buf, affected_rows);

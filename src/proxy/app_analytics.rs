@@ -14,13 +14,13 @@ use tokio::sync::RwLock;
 // ─── DimStats ─────────────────────────────────────────────────────────────────
 
 struct DimStats {
-    queries_total:       usize,
-    queries_read:        usize,
-    queries_write:       usize,
-    connections_active:  usize,
-    connections_total:   usize,
-    first_seen_ms:       u64,
-    last_seen_ms:        u64,
+    queries_total: usize,
+    queries_read: usize,
+    queries_write: usize,
+    connections_active: usize,
+    connections_total: usize,
+    first_seen_ms: u64,
+    last_seen_ms: u64,
 }
 
 impl DimStats {
@@ -41,22 +41,22 @@ impl DimStats {
 
 #[derive(Serialize, Clone)]
 pub struct DimEntry {
-    pub key:                String,
-    pub queries_total:      usize,
-    pub queries_read:       usize,
-    pub queries_write:      usize,
+    pub key: String,
+    pub queries_total: usize,
+    pub queries_read: usize,
+    pub queries_write: usize,
     pub connections_active: usize,
-    pub connections_total:  usize,
-    pub first_seen_ms:      u64,
-    pub last_seen_ms:       u64,
+    pub connections_total: usize,
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
 }
 
 // ─── AppAnalyticsStore ────────────────────────────────────────────────────────
 
 pub struct AppAnalyticsStore {
     by_user: Arc<RwLock<HashMap<String, DimStats>>>,
-    by_ip:   Arc<RwLock<HashMap<String, DimStats>>>,
-    by_app:  Arc<RwLock<HashMap<String, DimStats>>>,
+    by_ip: Arc<RwLock<HashMap<String, DimStats>>>,
+    by_app: Arc<RwLock<HashMap<String, DimStats>>>,
 }
 
 fn now_ms() -> u64 {
@@ -70,8 +70,8 @@ impl AppAnalyticsStore {
     pub fn new() -> Self {
         Self {
             by_user: Arc::new(RwLock::new(HashMap::new())),
-            by_ip:   Arc::new(RwLock::new(HashMap::new())),
-            by_app:  Arc::new(RwLock::new(HashMap::new())),
+            by_ip: Arc::new(RwLock::new(HashMap::new())),
+            by_app: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -79,7 +79,7 @@ impl AppAnalyticsStore {
     pub async fn on_connect(&self, user: &str, ip: &str, app: &str) {
         let now = now_ms();
         Self::conn_open(&self.by_user, user, now).await;
-        Self::conn_open(&self.by_ip,   ip,   now).await;
+        Self::conn_open(&self.by_ip, ip, now).await;
         if !app.is_empty() {
             Self::conn_open(&self.by_app, app, now).await;
         }
@@ -88,7 +88,7 @@ impl AppAnalyticsStore {
     /// Record a disconnection.
     pub async fn on_disconnect(&self, user: &str, ip: &str, app: &str) {
         Self::conn_close(&self.by_user, user).await;
-        Self::conn_close(&self.by_ip,   ip  ).await;
+        Self::conn_close(&self.by_ip, ip).await;
         if !app.is_empty() {
             Self::conn_close(&self.by_app, app).await;
         }
@@ -99,7 +99,7 @@ impl AppAnalyticsStore {
     pub async fn on_query(&self, user: &str, ip: &str, app: &str, is_read: bool, is_write: bool) {
         let now = now_ms();
         Self::query(&self.by_user, user, is_read, is_write, now).await;
-        Self::query(&self.by_ip,   ip,   is_read, is_write, now).await;
+        Self::query(&self.by_ip, ip, is_read, is_write, now).await;
         if !app.is_empty() {
             Self::query(&self.by_app, app, is_read, is_write, now).await;
         }
@@ -123,9 +123,11 @@ impl AppAnalyticsStore {
 
     async fn conn_open(map: &Arc<RwLock<HashMap<String, DimStats>>>, key: &str, now: u64) {
         let mut m = map.write().await;
-        let e = m.entry(key.to_string()).or_insert_with(|| DimStats::new(now));
-        e.connections_active  += 1;
-        e.connections_total   += 1;
+        let e = m
+            .entry(key.to_string())
+            .or_insert_with(|| DimStats::new(now));
+        e.connections_active += 1;
+        e.connections_total += 1;
         e.last_seen_ms = now;
     }
 
@@ -146,8 +148,12 @@ impl AppAnalyticsStore {
         let mut m = map.write().await;
         if let Some(e) = m.get_mut(key) {
             e.queries_total += 1;
-            if is_read  { e.queries_read  += 1; }
-            if is_write { e.queries_write += 1; }
+            if is_read {
+                e.queries_read += 1;
+            }
+            if is_write {
+                e.queries_write += 1;
+            }
             e.last_seen_ms = now;
         }
     }
@@ -157,14 +163,14 @@ impl AppAnalyticsStore {
         let mut entries: Vec<DimEntry> = m
             .iter()
             .map(|(k, s)| DimEntry {
-                key:                k.clone(),
-                queries_total:      s.queries_total,
-                queries_read:       s.queries_read,
-                queries_write:      s.queries_write,
+                key: k.clone(),
+                queries_total: s.queries_total,
+                queries_read: s.queries_read,
+                queries_write: s.queries_write,
                 connections_active: s.connections_active,
-                connections_total:  s.connections_total,
-                first_seen_ms:      s.first_seen_ms,
-                last_seen_ms:       s.last_seen_ms,
+                connections_total: s.connections_total,
+                first_seen_ms: s.first_seen_ms,
+                last_seen_ms: s.last_seen_ms,
             })
             .collect();
         entries.sort_by(|a, b| b.queries_total.cmp(&a.queries_total));

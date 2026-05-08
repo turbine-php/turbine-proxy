@@ -6,6 +6,8 @@ sidebar_position: 7
 
 TurbineProxy includes a real-time web dashboard built with React. It provides visibility into query performance, backend health, active connections, and cluster state — with no external monitoring stack required.
 
+![TurbineProxy Dashboard](/img/dashboard.png)
+
 ## Accessing the Dashboard
 
 By default, the dashboard is available at `http://localhost:8080`.

@@ -8,8 +8,8 @@
 //!   `Seconds_Behind_Source` (MySQL 8.0.22+) or `Seconds_Behind_Master` (older).
 //!   Marks the replica unhealthy if lag > `max_replica_lag_ms` or connection fails.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{BackendConfig, HaConfig};
@@ -81,20 +81,38 @@ impl HealthChecker {
         };
 
         if ok {
-            let prev_failures = self.pool.primary_health.consecutive_failures.swap(0, Ordering::Relaxed);
-            let was_down = !self.pool.primary_health.healthy.swap(true, Ordering::Relaxed);
+            let prev_failures = self
+                .pool
+                .primary_health
+                .consecutive_failures
+                .swap(0, Ordering::Relaxed);
+            let was_down = !self
+                .pool
+                .primary_health
+                .healthy
+                .swap(true, Ordering::Relaxed);
 
             if was_down || prev_failures >= self.failover_threshold {
                 let had_failover = self.pool.failover_idx.load(Ordering::Relaxed) >= 0;
                 self.pool.failover_idx.store(-1, Ordering::Relaxed);
                 if had_failover {
-                    log::info!("[HA] Primary {} recovered — failover cleared", self.primary_config.addr);
+                    log::info!(
+                        "[HA] Primary {} recovered — failover cleared",
+                        self.primary_config.addr
+                    );
                 }
             }
         } else {
-            let failures = self.pool.primary_health.consecutive_failures
-                .fetch_add(1, Ordering::Relaxed) + 1;
-            self.pool.primary_health.healthy.store(false, Ordering::Relaxed);
+            let failures = self
+                .pool
+                .primary_health
+                .consecutive_failures
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+            self.pool
+                .primary_health
+                .healthy
+                .store(false, Ordering::Relaxed);
 
             match reason {
                 Some(reason) => log::warn!(
@@ -111,7 +129,9 @@ impl HealthChecker {
                 ),
                 None => log::warn!(
                     "[HA] Primary {} unreachable ({}/{})",
-                    self.primary_config.addr, failures, self.failover_threshold,
+                    self.primary_config.addr,
+                    failures,
+                    self.failover_threshold,
                 ),
             }
 
@@ -125,7 +145,8 @@ impl HealthChecker {
 
     fn trigger_failover(&self) {
         // Pick the healthy replica with the lowest lag.
-        let best = self.replica_configs
+        let best = self
+            .replica_configs
             .iter()
             .enumerate()
             .filter(|(i, _)| self.pool.replica_health[*i].healthy.load(Ordering::Relaxed))
@@ -136,7 +157,10 @@ impl HealthChecker {
                 self.pool.failover_idx.store(idx as i64, Ordering::Relaxed);
                 log::error!(
                     "[HA] FAILOVER: primary {} down after {} checks — promoting replica [{}] {}",
-                    self.primary_config.addr, self.failover_threshold, idx, cfg.addr,
+                    self.primary_config.addr,
+                    self.failover_threshold,
+                    idx,
+                    cfg.addr,
                 );
             }
             None => {
@@ -159,7 +183,9 @@ impl HealthChecker {
                     match synced {
                         Some(false) => {
                             // Node is in the cluster but not SYNCED — skip remaining checks.
-                            let was_healthy = self.pool.replica_health[idx].healthy.swap(false, Ordering::Relaxed);
+                            let was_healthy = self.pool.replica_health[idx]
+                                .healthy
+                                .swap(false, Ordering::Relaxed);
                             if was_healthy {
                                 log::warn!(
                                     "[HA/Galera] Replica [{}] {} wsrep_local_state != 4 — removed from read pool",
@@ -169,7 +195,11 @@ impl HealthChecker {
                             return;
                         }
                         Some(true) => {
-                            log::debug!("[HA/Galera] Replica [{}] {} wsrep_local_state=4 (SYNCED)", idx, config.addr);
+                            log::debug!(
+                                "[HA/Galera] Replica [{}] {} wsrep_local_state=4 (SYNCED)",
+                                idx,
+                                config.addr
+                            );
                         }
                         None => {
                             // wsrep_local_state not present — not a Galera node, continue normally.
@@ -178,28 +208,43 @@ impl HealthChecker {
                 }
 
                 let lag_ms = query_replica_lag(&mut *conn).await.unwrap_or(0);
-                self.pool.replica_health[idx].lag_ms.store(lag_ms, Ordering::Relaxed);
-                self.pool.replica_health[idx].consecutive_failures.store(0, Ordering::Relaxed);
+                self.pool.replica_health[idx]
+                    .lag_ms
+                    .store(lag_ms, Ordering::Relaxed);
+                self.pool.replica_health[idx]
+                    .consecutive_failures
+                    .store(0, Ordering::Relaxed);
 
                 let healthy = lag_ms <= self.max_lag_ms;
-                let was_healthy = self.pool.replica_health[idx].healthy.swap(healthy, Ordering::Relaxed);
+                let was_healthy = self.pool.replica_health[idx]
+                    .healthy
+                    .swap(healthy, Ordering::Relaxed);
 
                 match (was_healthy, healthy) {
                     (true, false) => log::warn!(
                         "[HA] Replica [{}] {} lag {}ms > {}ms — removed from read pool",
-                        idx, config.addr, lag_ms, self.max_lag_ms,
+                        idx,
+                        config.addr,
+                        lag_ms,
+                        self.max_lag_ms,
                     ),
                     (false, true) => log::info!(
                         "[HA] Replica [{}] {} lag {}ms — back in read pool",
-                        idx, config.addr, lag_ms,
+                        idx,
+                        config.addr,
+                        lag_ms,
                     ),
                     _ => {}
                 }
             }
             Err(e) => {
-                let failures = self.pool.replica_health[idx].consecutive_failures
-                    .fetch_add(1, Ordering::Relaxed) + 1;
-                let was_healthy = self.pool.replica_health[idx].healthy.swap(false, Ordering::Relaxed);
+                let failures = self.pool.replica_health[idx]
+                    .consecutive_failures
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
+                let was_healthy = self.pool.replica_health[idx]
+                    .healthy
+                    .swap(false, Ordering::Relaxed);
 
                 // Only log first failure and transitions to avoid noise.
                 if was_healthy || failures == 1 {

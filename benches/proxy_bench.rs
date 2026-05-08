@@ -52,33 +52,55 @@ use tokio_postgres::{Client as PgClient, Config as PgConfig, NoTls};
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
-fn mysql_host() -> String { env::var("TEST_MYSQL_HOST").unwrap_or_else(|_| "127.0.0.1".into()) }
-fn mysql_port() -> u16 { env::var("TEST_MYSQL_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3306) }
-fn mysql_user() -> String { env::var("TEST_MYSQL_USER").unwrap_or_else(|_| "root".into()) }
-fn mysql_pass() -> String { env::var("TEST_MYSQL_PASS").unwrap_or_else(|_| "root".into()) }
+fn mysql_host() -> String {
+    env::var("TEST_MYSQL_HOST").unwrap_or_else(|_| "127.0.0.1".into())
+}
+fn mysql_port() -> u16 {
+    env::var("TEST_MYSQL_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3306)
+}
+fn mysql_user() -> String {
+    env::var("TEST_MYSQL_USER").unwrap_or_else(|_| "root".into())
+}
+fn mysql_pass() -> String {
+    env::var("TEST_MYSQL_PASS").unwrap_or_else(|_| "root".into())
+}
 
-fn pg_host() -> String { env::var("TEST_PG_HOST").unwrap_or_else(|_| "127.0.0.1".into()) }
-fn pg_port() -> u16 { env::var("TEST_PG_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(5432) }
-fn pg_user() -> String { env::var("TEST_PG_USER").unwrap_or_else(|_| "postgres".into()) }
-fn pg_pass() -> String { env::var("TEST_PG_PASS").unwrap_or_else(|_| "postgres".into()) }
+fn pg_host() -> String {
+    env::var("TEST_PG_HOST").unwrap_or_else(|_| "127.0.0.1".into())
+}
+fn pg_port() -> u16 {
+    env::var("TEST_PG_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5432)
+}
+fn pg_user() -> String {
+    env::var("TEST_PG_USER").unwrap_or_else(|_| "postgres".into())
+}
+fn pg_pass() -> String {
+    env::var("TEST_PG_PASS").unwrap_or_else(|_| "postgres".into())
+}
 
 const MYSQL_DB: &str = "turbineproxy_test";
-const PG_DB:    &str = "turbineproxy_test";
+const PG_DB: &str = "turbineproxy_test";
 
 /// MySQL proxy port used for benchmarks (full stack).
-const BENCH_MYSQL_PROXY:  u16 = 33307;
+const BENCH_MYSQL_PROXY: u16 = 33307;
 /// PgSQL proxy port used for the full-stack proxy (MySQL + PG both required).
-const BENCH_PG_PROXY:     u16 = 35433;
+const BENCH_PG_PROXY: u16 = 35433;
 /// PgSQL proxy port used for PG-only bench (only PG required).
 const BENCH_PG_ONLY_PROXY: u16 = 35434;
 /// Dashboard port for cluster sync benchmarks.
-const BENCH_DASHBOARD:    u16 = 38080;
-const CLUSTER_SECRET:     &str = "bench-secret";
+const BENCH_DASHBOARD: u16 = 38080;
+const CLUSTER_SECRET: &str = "bench-secret";
 
 // ── Proxy lifecycle ────────────────────────────────────────────────────────────
 
 struct BenchProxy {
-    _child:  Child,
+    _child: Child,
     _config: NamedTempFile,
 }
 
@@ -126,9 +148,9 @@ fn mysql_available() -> bool {
 
 fn pg_available() -> bool {
     let mut cfg = PgConfig::new();
-    cfg.host(&pg_host())
+    cfg.host(pg_host())
         .port(pg_port())
-        .user(&pg_user())
+        .user(pg_user())
         .password(pg_pass().as_bytes())
         .dbname(PG_DB)
         .connect_timeout(Duration::from_secs(3));
@@ -208,19 +230,19 @@ password = "{pg_pass}"
 database = "{pg_db}"
 "#,
         mysql_proxy = BENCH_MYSQL_PROXY,
-        mysql_host  = mysql_host(),
-        mysql_port  = mysql_port(),
-        mysql_user  = mysql_user(),
-        mysql_pass  = mysql_pass(),
-        mysql_db    = MYSQL_DB,
-        dashboard   = BENCH_DASHBOARD,
-        secret      = CLUSTER_SECRET,
-        pg_proxy    = BENCH_PG_PROXY,
-        pg_host     = pg_host(),
-        pg_port     = pg_port(),
-        pg_user     = pg_user(),
-        pg_pass     = pg_pass(),
-        pg_db       = PG_DB,
+        mysql_host = mysql_host(),
+        mysql_port = mysql_port(),
+        mysql_user = mysql_user(),
+        mysql_pass = mysql_pass(),
+        mysql_db = MYSQL_DB,
+        dashboard = BENCH_DASHBOARD,
+        secret = CLUSTER_SECRET,
+        pg_proxy = BENCH_PG_PROXY,
+        pg_host = pg_host(),
+        pg_port = pg_port(),
+        pg_user = pg_user(),
+        pg_pass = pg_pass(),
+        pg_db = PG_DB,
     )
     .unwrap();
 
@@ -249,8 +271,11 @@ database = "{pg_db}"
     for _ in 0..100 {
         std::thread::sleep(Duration::from_millis(200));
         let mut cfg = PgConfig::new();
-        cfg.host("127.0.0.1").port(BENCH_PG_PROXY)
-            .user(&pg_user()).password(pg_pass().as_bytes()).dbname(PG_DB)
+        cfg.host("127.0.0.1")
+            .port(BENCH_PG_PROXY)
+            .user(pg_user())
+            .password(pg_pass().as_bytes())
+            .dbname(PG_DB)
             .connect_timeout(Duration::from_secs(1));
         if rt().block_on(async { cfg.connect(NoTls).await.is_ok() }) {
             break;
@@ -269,7 +294,10 @@ database = "{pg_db}"
         }
     }
 
-    BenchProxy { _child: child, _config: config }
+    BenchProxy {
+        _child: child,
+        _config: config,
+    }
 }
 
 /// Start a proxy that only exposes the PgSQL listener.
@@ -314,13 +342,13 @@ password = "{pg_pass}"
 database = "{pg_db}"
 "#,
         mysql_proxy = BENCH_MYSQL_PROXY + 1000, // port 34307 — not used by any bench
-        secret      = CLUSTER_SECRET,
-        pg_proxy    = BENCH_PG_ONLY_PROXY,
-        pg_host     = pg_host(),
-        pg_port     = pg_port(),
-        pg_user     = pg_user(),
-        pg_pass     = pg_pass(),
-        pg_db       = PG_DB,
+        secret = CLUSTER_SECRET,
+        pg_proxy = BENCH_PG_ONLY_PROXY,
+        pg_host = pg_host(),
+        pg_port = pg_port(),
+        pg_user = pg_user(),
+        pg_pass = pg_pass(),
+        pg_db = PG_DB,
     )
     .unwrap();
 
@@ -336,15 +364,21 @@ database = "{pg_db}"
     for _ in 0..100 {
         std::thread::sleep(Duration::from_millis(200));
         let mut cfg = PgConfig::new();
-        cfg.host("127.0.0.1").port(BENCH_PG_ONLY_PROXY)
-            .user(&pg_user()).password(pg_pass().as_bytes()).dbname(PG_DB)
+        cfg.host("127.0.0.1")
+            .port(BENCH_PG_ONLY_PROXY)
+            .user(pg_user())
+            .password(pg_pass().as_bytes())
+            .dbname(PG_DB)
             .connect_timeout(Duration::from_secs(1));
         if rt().block_on(async { cfg.connect(NoTls).await.is_ok() }) {
             break;
         }
     }
 
-    BenchProxy { _child: child, _config: config }
+    BenchProxy {
+        _child: child,
+        _config: config,
+    }
 }
 
 fn mysql_direct() -> Conn {
@@ -371,8 +405,11 @@ fn mysql_proxy() -> Conn {
 
 async fn pg_direct() -> PgClient {
     let mut cfg = PgConfig::new();
-    cfg.host(&pg_host()).port(pg_port())
-        .user(&pg_user()).password(pg_pass().as_bytes()).dbname(PG_DB)
+    cfg.host(pg_host())
+        .port(pg_port())
+        .user(pg_user())
+        .password(pg_pass().as_bytes())
+        .dbname(PG_DB)
         .connect_timeout(Duration::from_secs(5));
     let (c, conn) = cfg.connect(NoTls).await.expect("direct pg connect");
     tokio::spawn(conn);
@@ -380,10 +417,14 @@ async fn pg_direct() -> PgClient {
 }
 
 /// Connect through the full-stack proxy (MySQL + PG both required).
+#[allow(dead_code)]
 async fn pg_proxy_client() -> PgClient {
     let mut cfg = PgConfig::new();
-    cfg.host("127.0.0.1").port(BENCH_PG_PROXY)
-        .user(&pg_user()).password(pg_pass().as_bytes()).dbname(PG_DB)
+    cfg.host("127.0.0.1")
+        .port(BENCH_PG_PROXY)
+        .user(pg_user())
+        .password(pg_pass().as_bytes())
+        .dbname(PG_DB)
         .connect_timeout(Duration::from_secs(5));
     let (c, conn) = cfg.connect(NoTls).await.expect("proxy pg connect");
     tokio::spawn(conn);
@@ -393,8 +434,11 @@ async fn pg_proxy_client() -> PgClient {
 /// Connect through the PG-only proxy (only PG required).
 async fn pg_proxy_only_client() -> PgClient {
     let mut cfg = PgConfig::new();
-    cfg.host("127.0.0.1").port(BENCH_PG_ONLY_PROXY)
-        .user(&pg_user()).password(pg_pass().as_bytes()).dbname(PG_DB)
+    cfg.host("127.0.0.1")
+        .port(BENCH_PG_ONLY_PROXY)
+        .user(pg_user())
+        .password(pg_pass().as_bytes())
+        .dbname(PG_DB)
         .connect_timeout(Duration::from_secs(5));
     let (c, conn) = cfg.connect(NoTls).await.expect("pg-only proxy connect");
     tokio::spawn(conn);
@@ -407,7 +451,9 @@ fn bench_mysql(c: &mut Criterion) {
     if !should_run_group("mysql") {
         return;
     }
-    if get_proxy().is_none() { return; }
+    if get_proxy().is_none() {
+        return;
+    }
 
     let mut group = c.benchmark_group("mysql");
     group.throughput(Throughput::Elements(1));
@@ -453,7 +499,9 @@ fn bench_mysql(c: &mut Criterion) {
     let mut direct = mysql_direct();
     group.bench_function("direct/insert_select", |b| {
         b.iter(|| {
-            direct.query_drop("INSERT INTO bench_mysql (v) VALUES (1)").unwrap();
+            direct
+                .query_drop("INSERT INTO bench_mysql (v) VALUES (1)")
+                .unwrap();
             let _: Vec<i32> = direct.query("SELECT COUNT(*) FROM bench_mysql").unwrap();
         });
     });
@@ -461,7 +509,9 @@ fn bench_mysql(c: &mut Criterion) {
     let mut proxy = mysql_proxy();
     group.bench_function("proxy/insert_select", |b| {
         b.iter(|| {
-            proxy.query_drop("INSERT INTO bench_mysql (v) VALUES (1)").unwrap();
+            proxy
+                .query_drop("INSERT INTO bench_mysql (v) VALUES (1)")
+                .unwrap();
             let _: Vec<i32> = proxy.query("SELECT COUNT(*) FROM bench_mysql").unwrap();
         });
     });
@@ -486,7 +536,9 @@ fn bench_mysql(c: &mut Criterion) {
     group.bench_function("direct/transaction", |b| {
         b.iter(|| {
             direct.query_drop("START TRANSACTION").unwrap();
-            direct.query_drop("INSERT INTO bench_mysql (v) VALUES (99)").unwrap();
+            direct
+                .query_drop("INSERT INTO bench_mysql (v) VALUES (99)")
+                .unwrap();
             direct.query_drop("ROLLBACK").unwrap();
         });
     });
@@ -495,7 +547,9 @@ fn bench_mysql(c: &mut Criterion) {
     group.bench_function("proxy/transaction", |b| {
         b.iter(|| {
             proxy.query_drop("START TRANSACTION").unwrap();
-            proxy.query_drop("INSERT INTO bench_mysql (v) VALUES (99)").unwrap();
+            proxy
+                .query_drop("INSERT INTO bench_mysql (v) VALUES (99)")
+                .unwrap();
             proxy.query_drop("ROLLBACK").unwrap();
         });
     });
@@ -539,7 +593,9 @@ fn bench_pgsql(c: &mut Criterion) {
         return;
     }
     // PG bench only needs PostgreSQL — MySQL is not required.
-    if get_pg_proxy().is_none() { return; }
+    if get_pg_proxy().is_none() {
+        return;
+    }
 
     let mut group = c.benchmark_group("pgsql");
     group.throughput(Throughput::Elements(1));
@@ -549,16 +605,14 @@ fn bench_pgsql(c: &mut Criterion) {
     // ── SELECT 1 ──────────────────────────────────────────────────────────────
     let direct = rt.block_on(pg_direct());
     group.bench_function("direct/select_1", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _row = direct.query_one("SELECT 1 AS n", &[]).await.unwrap();
         });
     });
 
     let proxy = rt.block_on(pg_proxy_only_client());
     group.bench_function("proxy/select_1", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _row = proxy.query_one("SELECT 1 AS n", &[]).await.unwrap();
         });
     });
@@ -566,16 +620,14 @@ fn bench_pgsql(c: &mut Criterion) {
     // ── SELECT now() ──────────────────────────────────────────────────────────
     let direct = rt.block_on(pg_direct());
     group.bench_function("direct/select_now", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _row = direct.query_one("SELECT now()", &[]).await.unwrap();
         });
     });
 
     let proxy = rt.block_on(pg_proxy_only_client());
     group.bench_function("proxy/select_now", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _row = proxy.query_one("SELECT now()", &[]).await.unwrap();
         });
     });
@@ -583,8 +635,7 @@ fn bench_pgsql(c: &mut Criterion) {
     // ── Parameterized query ───────────────────────────────────────────────────
     let direct = rt.block_on(pg_direct());
     group.bench_function("direct/parameterized", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _row = direct
                 .query_one("SELECT $1::int + $2::int AS r", &[&10_i32, &20_i32])
                 .await
@@ -594,8 +645,7 @@ fn bench_pgsql(c: &mut Criterion) {
 
     let proxy = rt.block_on(pg_proxy_only_client());
     group.bench_function("proxy/parameterized", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _row = proxy
                 .query_one("SELECT $1::int + $2::int AS r", &[&10_i32, &20_i32])
                 .await
@@ -610,8 +660,7 @@ fn bench_pgsql(c: &mut Criterion) {
         (c, stmt)
     });
     group.bench_function("direct/prepared_reuse", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _row = direct.0.query_one(&direct.1, &[&42_i32]).await.unwrap();
         });
     });
@@ -622,9 +671,12 @@ fn bench_pgsql(c: &mut Criterion) {
         (c, stmt)
     });
     group.bench_function("proxy/prepared_reuse", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
-            let _row = proxy_prepared.0.query_one(&proxy_prepared.1, &[&42_i32]).await.unwrap();
+        b.to_async(bench_rt()).iter(|| async {
+            let _row = proxy_prepared
+                .0
+                .query_one(&proxy_prepared.1, &[&42_i32])
+                .await
+                .unwrap();
         });
     });
 
@@ -641,8 +693,7 @@ fn bench_pgsql(c: &mut Criterion) {
         c
     });
     group.bench_function("direct/transaction", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             direct
                 .batch_execute("BEGIN; INSERT INTO bench_pgsql (v) VALUES (99); ROLLBACK;")
                 .await
@@ -652,8 +703,7 @@ fn bench_pgsql(c: &mut Criterion) {
 
     let proxy = rt.block_on(pg_proxy_only_client());
     group.bench_function("proxy/transaction", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             // Use simple query protocol here to avoid prepared statement cache
             // mismatches when backend sessions are recycled by the proxy.
             proxy
@@ -667,13 +717,9 @@ fn bench_pgsql(c: &mut Criterion) {
     for n in [1usize, 10, 100] {
         let direct = rt.block_on(pg_direct());
         group.bench_with_input(BenchmarkId::new("direct/select_n_rows", n), &n, |b, &n| {
-            b.to_async(bench_rt())
-            .iter(|| async {
+            b.to_async(bench_rt()).iter(|| async {
                 let _rows = direct
-                    .query(
-                        &format!("SELECT generate_series(1, {n}) AS s"),
-                        &[],
-                    )
+                    .query(&format!("SELECT generate_series(1, {n}) AS s"), &[])
                     .await
                     .unwrap();
             });
@@ -681,13 +727,9 @@ fn bench_pgsql(c: &mut Criterion) {
 
         let proxy = rt.block_on(pg_proxy_only_client());
         group.bench_with_input(BenchmarkId::new("proxy/select_n_rows", n), &n, |b, &n| {
-            b.to_async(bench_rt())
-            .iter(|| async {
+            b.to_async(bench_rt()).iter(|| async {
                 let _rows = proxy
-                    .query(
-                        &format!("SELECT generate_series(1, {n}) AS s"),
-                        &[],
-                    )
+                    .query(&format!("SELECT generate_series(1, {n}) AS s"), &[])
                     .await
                     .unwrap();
             });
@@ -701,7 +743,9 @@ fn bench_cluster_sync(c: &mut Criterion) {
     if !should_run_group("cluster") {
         return;
     }
-    if get_proxy().is_none() { return; }
+    if get_proxy().is_none() {
+        return;
+    }
 
     let mut group = c.benchmark_group("cluster");
     group.throughput(Throughput::Elements(1));
@@ -736,21 +780,20 @@ secret = "{secret}"
 enabled = false
 "#,
         mysql_proxy = BENCH_MYSQL_PROXY,
-        mysql_host  = mysql_host(),
-        mysql_port  = mysql_port(),
-        mysql_user  = mysql_user(),
-        mysql_pass  = mysql_pass(),
-        mysql_db    = MYSQL_DB,
-        dashboard   = BENCH_DASHBOARD,
-        secret      = CLUSTER_SECRET,
+        mysql_host = mysql_host(),
+        mysql_port = mysql_port(),
+        mysql_user = mysql_user(),
+        mysql_pass = mysql_pass(),
+        mysql_db = MYSQL_DB,
+        dashboard = BENCH_DASHBOARD,
+        secret = CLUSTER_SECRET,
     );
 
     let client = reqwest::Client::new();
 
     // ── POST /api/sync latency ────────────────────────────────────────────────
     group.bench_function("sync/post_valid", |b| {
-        b.to_async(bench_rt())
-        .iter(|| {
+        b.to_async(bench_rt()).iter(|| {
             let client = &client;
             let config_toml = &config_toml;
             async move {
@@ -767,30 +810,27 @@ enabled = false
 
     // ── GET /health latency ───────────────────────────────────────────────────
     group.bench_function("dashboard/get_health", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
-            let _resp =
-                reqwest::get(format!("http://127.0.0.1:{BENCH_DASHBOARD}/health"))
-                    .await
-                    .unwrap();
+        b.to_async(bench_rt()).iter(|| async {
+            let _resp = reqwest::get(format!("http://127.0.0.1:{BENCH_DASHBOARD}/health"))
+                .await
+                .unwrap();
         });
     });
 
     // ── GET /api/postgres/pool latency ────────────────────────────────────────
     group.bench_function("dashboard/get_pg_pool", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
-            let _resp =
-                reqwest::get(format!("http://127.0.0.1:{BENCH_DASHBOARD}/api/postgres/pool"))
-                    .await
-                    .unwrap();
+        b.to_async(bench_rt()).iter(|| async {
+            let _resp = reqwest::get(format!(
+                "http://127.0.0.1:{BENCH_DASHBOARD}/api/postgres/pool"
+            ))
+            .await
+            .unwrap();
         });
     });
 
     // ── GET /api/config/status latency ───────────────────────────────────────
     group.bench_function("dashboard/get_config_status", |b| {
-        b.to_async(bench_rt())
-        .iter(|| async {
+        b.to_async(bench_rt()).iter(|| async {
             let _resp = reqwest::get(format!(
                 "http://127.0.0.1:{BENCH_DASHBOARD}/api/config/status"
             ))
@@ -821,6 +861,143 @@ fn bench_config() -> Criterion {
 criterion_group!(
     name    = benches;
     config  = bench_config();
-    targets = bench_mysql, bench_pgsql, bench_cluster_sync
+    targets = bench_mysql, bench_pgsql, bench_cluster_sync, bench_hot_path
 );
 criterion_main!(benches);
+
+// ── Hot-path benchmarks (no database needed) ───────────────────────────────────
+//
+// Inline the hot-path logic so these benchmarks can run without a lib crate.
+// Measures fingerprinting and query classification — the two functions called
+// on every client query.
+
+/// Inline copy of `proxy::fingerprint::fingerprint` for benchmark isolation.
+fn fingerprint(sql: &str) -> String {
+    let mut result = String::with_capacity(sql.len());
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        match bytes[i] {
+            b'\'' => {
+                result.push('?');
+                i += 1;
+                while i < len {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                    } else if bytes[i] == b'\'' {
+                        if i + 1 < len && bytes[i + 1] == b'\'' {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'0'..=b'9' => {
+                if !result.is_empty() {
+                    let last = result.as_bytes()[result.len() - 1];
+                    if last.is_ascii_alphanumeric() || last == b'_' {
+                        result.push(bytes[i] as char);
+                        i += 1;
+                        continue;
+                    }
+                }
+                result.push('?');
+                while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                    i += 1;
+                }
+            }
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                result.push(' ');
+                while i < len && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+            }
+            _ => {
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+    }
+    result
+}
+
+/// Inline copy of `proxy::classifier::classify` for benchmark isolation.
+fn classify_query(sql: &str) -> &'static str {
+    let trimmed = sql.trim_start();
+    // skip block comments
+    let effective = if trimmed.starts_with("/*") {
+        trimmed
+            .find("*/")
+            .map(|p| trimmed[p + 2..].trim_start())
+            .unwrap_or(trimmed)
+    } else if trimmed.starts_with("--") {
+        trimmed.find('\n').map(|p| &trimmed[p + 1..]).unwrap_or("")
+    } else {
+        trimmed
+    };
+    let upper: String = effective
+        .chars()
+        .take(20)
+        .collect::<String>()
+        .to_uppercase();
+    if upper.starts_with("SELECT") || upper.starts_with("(SELECT") {
+        "read"
+    } else if upper.starts_with("INSERT")
+        || upper.starts_with("UPDATE")
+        || upper.starts_with("DELETE")
+        || upper.starts_with("REPLACE")
+        || upper.starts_with("CREATE")
+        || upper.starts_with("ALTER")
+        || upper.starts_with("DROP")
+        || upper.starts_with("TRUNCATE")
+    {
+        "write"
+    } else if upper.starts_with("BEGIN")
+        || upper.starts_with("COMMIT")
+        || upper.starts_with("ROLLBACK")
+        || upper.starts_with("START T")
+    {
+        "transaction"
+    } else {
+        "other"
+    }
+}
+
+fn bench_hot_path(c: &mut Criterion) {
+    let queries: &[(&str, &str)] = &[
+        ("simple_select",  "SELECT * FROM users WHERE id = 42 AND status = 'active'"),
+        ("join_select",    "SELECT u.id, u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE u.active = 1"),
+        ("insert",         "INSERT INTO events (user_id, event, ts) VALUES (123, 'login', 1700000000)"),
+        ("update",         "UPDATE sessions SET last_seen = 1700000001 WHERE token = 'abc123def456'"),
+        ("delete",         "DELETE FROM logs WHERE created_at < 1699000000 AND level = 'debug'"),
+        ("in_list",        "SELECT id FROM products WHERE category_id IN (1, 2, 3, 4, 5, 6, 7, 8)"),
+        ("comment_select", "/* app:v2 */ SELECT * FROM orders WHERE status = 'pending'"),
+    ];
+
+    {
+        let mut group = c.benchmark_group("hot_path/fingerprint");
+        group.throughput(Throughput::Elements(1));
+        for &(label, sql) in queries {
+            group.bench_with_input(BenchmarkId::new("fingerprint", label), sql, |b, sql| {
+                b.iter(|| fingerprint(std::hint::black_box(sql)));
+            });
+        }
+        group.finish();
+    }
+
+    {
+        let mut group = c.benchmark_group("hot_path/classify");
+        group.throughput(Throughput::Elements(1));
+        for &(label, sql) in queries {
+            group.bench_with_input(BenchmarkId::new("classify", label), sql, |b, sql| {
+                b.iter(|| classify_query(std::hint::black_box(sql)));
+            });
+        }
+        group.finish();
+    }
+}

@@ -11,7 +11,9 @@ use tokio::sync::Semaphore;
 use crate::analytics::Collector;
 use crate::analytics::ThroughputCounters;
 use crate::config::ProxyConfig;
-use crate::protocol::{BackendConnection, ClientAuthConfig, ClientSession, Command, DatabaseProtocol};
+use crate::protocol::{
+    BackendConnection, ClientAuthConfig, ClientSession, Command, DatabaseProtocol,
+};
 use crate::proxy::app_analytics::AppAnalyticsStore;
 use crate::proxy::classifier::{classify, QueryIntent};
 use crate::proxy::error_events::{ErrorEvent, ErrorEventStore};
@@ -21,9 +23,9 @@ use crate::proxy::histogram::QueryHistogram;
 use crate::proxy::n1::N1Store;
 use crate::proxy::pool::BackendPool;
 use crate::proxy::regression::RegressionStore;
+use crate::proxy::rewriter::Rewriter;
 use crate::proxy::router::Router;
 use crate::proxy::rules::RuleEngine;
-use crate::proxy::rewriter::Rewriter;
 use crate::proxy::security::{AuditLogger, InjectionDetector, QueryWhitelist};
 use crate::proxy::stmt_shadow::MysqlStmtShadow;
 use crate::proxy::tracer::{ActiveTrace, TracerStore};
@@ -51,7 +53,12 @@ impl SessionQueryTracker {
     const HOT_KEY_THRESHOLD: u32 = 30;
 
     fn new(conn_id: u32, n1_store: Arc<N1Store>) -> Self {
-        Self { counts: HashMap::new(), exact_counts: HashMap::new(), conn_id, n1_store }
+        Self {
+            counts: HashMap::new(),
+            exact_counts: HashMap::new(),
+            conn_id,
+            n1_store,
+        }
     }
 
     /// Record one execution. Emits a warning the first time threshold is hit.
@@ -62,7 +69,9 @@ impl SessionQueryTracker {
         if entry.0 == Self::WARN_THRESHOLD {
             log::warn!(
                 "[conn {}] N+1 detected: query executed {} times — {}",
-                self.conn_id, entry.0, entry.1
+                self.conn_id,
+                entry.0,
+                entry.1
             );
         }
     }
@@ -75,7 +84,9 @@ impl SessionQueryTracker {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         sql.hash(&mut h);
         let sql_hash = h.finish();
-        let entry = self.exact_counts.entry(sql_hash)
+        let entry = self
+            .exact_counts
+            .entry(sql_hash)
             .or_insert_with(|| (0, sql.chars().take(300).collect::<String>()));
         entry.0 += 1;
         if entry.0 == Self::HOT_KEY_THRESHOLD {
@@ -87,7 +98,9 @@ impl SessionQueryTracker {
 
     /// Push repeated patterns to the shared N1Store and log a summary.
     fn summarise(&self) {
-        let repeated: Vec<(u64, String, u32)> = self.counts.iter()
+        let repeated: Vec<(u64, String, u32)> = self
+            .counts
+            .iter()
             .filter(|(_, (c, _))| *c >= Self::WARN_THRESHOLD)
             .map(|(hash, (c, fp))| (*hash, fp.clone(), *c))
             .collect();
@@ -96,10 +109,7 @@ impl SessionQueryTracker {
         }
         self.n1_store.record_connection(&repeated);
         for (_, fp, count) in &repeated {
-            log::info!(
-                "[conn {}] repeated query x{}: {}",
-                self.conn_id, count, fp
-            );
+            log::info!("[conn {}] repeated query x{}: {}", self.conn_id, count, fp);
         }
     }
 }
@@ -184,7 +194,9 @@ impl ProxyServer {
         let idle_timeout = if config.connection_max_idle_secs == 0 {
             None
         } else {
-            Some(std::time::Duration::from_secs(config.connection_max_idle_secs))
+            Some(std::time::Duration::from_secs(
+                config.connection_max_idle_secs,
+            ))
         };
         let pool = Arc::new(BackendPool::with_idle_timeout(
             &config.primary,
@@ -250,7 +262,9 @@ impl ProxyServer {
     /// Number of queries killed by the per-query timeout (`max_query_time_ms`).
     #[allow(dead_code)]
     pub fn queries_killed(&self) -> usize {
-        self.router.queries_killed.load(std::sync::atomic::Ordering::Relaxed)
+        self.router
+            .queries_killed
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Hot-reload the backend pool from a new config, without restarting.
@@ -263,7 +277,9 @@ impl ProxyServer {
         let idle_timeout = if new_config.connection_max_idle_secs == 0 {
             None
         } else {
-            Some(std::time::Duration::from_secs(new_config.connection_max_idle_secs))
+            Some(std::time::Duration::from_secs(
+                new_config.connection_max_idle_secs,
+            ))
         };
         let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
             &new_config.primary,
@@ -273,7 +289,11 @@ impl ProxyServer {
             idle_timeout,
         ));
         self.router.reload_pool(new_pool).await;
-        log::info!("[reload] backend pool swapped — primary={} replicas={}", new_config.primary.addr, new_config.replicas.len());
+        log::info!(
+            "[reload] backend pool swapped — primary={} replicas={}",
+            new_config.primary.addr,
+            new_config.replicas.len()
+        );
     }
 
     /// Access the user registry (for the dashboard).
@@ -324,10 +344,13 @@ impl ProxyServer {
     pub async fn run(&self) -> anyhow::Result<()> {
         let listener = TcpListener::bind(&self.config.listen_addr)
             .await
-            .map_err(|e| anyhow::anyhow!(
-                "Failed to bind to {}: {} — is the port already in use?",
-                self.config.listen_addr, e
-            ))?;
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to bind to {}: {} — is the port already in use?",
+                    self.config.listen_addr,
+                    e
+                )
+            })?;
         log::info!("TurbineProxy listening on {}", self.config.listen_addr);
 
         let proxy_protocol_enabled = self.config.proxy_protocol.enabled;
@@ -389,9 +412,36 @@ impl ProxyServer {
             metrics.connections_active.fetch_add(1, Ordering::Relaxed);
 
             tokio::spawn(async move {
-                if let Err(e) =
-                    handle_connection(socket, conn_id, addr.to_string(), router, metrics.clone(), collector, protocol, n1_store, user_registry, tracer_store, app_analytics, heatmap, throughput, regression_store, max_transaction_time_ms, max_transaction_idle_ms, read_your_own_writes_ms, select_version_forwarding, sqli_detector, query_whitelist, audit_logger, error_events, users_config, proxy_protocol_enabled, client_error_limit, client_error_window_secs, log_prepared_params)
-                        .await
+                if let Err(e) = handle_connection(
+                    socket,
+                    conn_id,
+                    addr.to_string(),
+                    router,
+                    metrics.clone(),
+                    collector,
+                    protocol,
+                    n1_store,
+                    user_registry,
+                    tracer_store,
+                    app_analytics,
+                    heatmap,
+                    throughput,
+                    regression_store,
+                    max_transaction_time_ms,
+                    max_transaction_idle_ms,
+                    read_your_own_writes_ms,
+                    select_version_forwarding,
+                    sqli_detector,
+                    query_whitelist,
+                    audit_logger,
+                    error_events,
+                    users_config,
+                    proxy_protocol_enabled,
+                    client_error_limit,
+                    client_error_window_secs,
+                    log_prepared_params,
+                )
+                .await
                 {
                     log::debug!("Connection {} error: {}", conn_id, e);
                 }
@@ -403,8 +453,11 @@ impl ProxyServer {
         // Drain: wait for active connections to finish, up to shutdown_timeout_secs.
         let timeout_secs = self.config.shutdown_timeout_secs;
         if timeout_secs > 0 && self.metrics.connections_active.load(Ordering::Relaxed) > 0 {
-            log::info!("Draining {} active connections (timeout {}s)…",
-                self.metrics.connections_active.load(Ordering::Relaxed), timeout_secs);
+            log::info!(
+                "Draining {} active connections (timeout {}s)…",
+                self.metrics.connections_active.load(Ordering::Relaxed),
+                timeout_secs
+            );
             let deadline = Instant::now() + std::time::Duration::from_secs(timeout_secs);
             while self.metrics.connections_active.load(Ordering::Relaxed) > 0 {
                 if Instant::now() >= deadline {
@@ -420,6 +473,7 @@ impl ProxyServer {
 }
 
 /// Handle a single client connection.
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection(
     mut stream: TcpStream,
     conn_id: u32,
@@ -473,7 +527,9 @@ async fn handle_connection(
         };
 
     // Register this connection in the user registry.
-    user_registry.on_connect(session.username(), session.allow_writes()).await;
+    user_registry
+        .on_connect(session.username(), session.allow_writes())
+        .await;
     let session_username = session.username().to_string();
     let session_app = session.app_name().to_string();
     // client_addr may be "ip:port" — strip port for the per-IP dimension.
@@ -481,7 +537,9 @@ async fn handle_connection(
         .rsplit_once(':')
         .map(|(ip, _)| ip.to_string())
         .unwrap_or_else(|| client_addr.clone());
-    app_analytics.on_connect(&session_username, &client_ip, &session_app).await;
+    app_analytics
+        .on_connect(&session_username, &client_ip, &session_app)
+        .await;
 
     // Sticky connection for transactions — must use the same backend.
     let mut tx_conn: Option<Box<dyn BackendConnection>> = None;
@@ -523,12 +581,19 @@ async fn handle_connection(
             if active > user_cfg.max_connections {
                 log::warn!(
                     "[conn {}] user '{}' exceeded max_connections ({}/{})",
-                    conn_id, session_username, active, user_cfg.max_connections
+                    conn_id,
+                    session_username,
+                    active,
+                    user_cfg.max_connections
                 );
-                let _ = session.write_error("1040", "Too many connections for this user").await;
+                let _ = session
+                    .write_error("1040", "Too many connections for this user")
+                    .await;
                 let _ = session.flush().await;
                 user_registry.on_disconnect(&session_username).await;
-                app_analytics.on_disconnect(&session_username, &client_ip, &session_app).await;
+                app_analytics
+                    .on_disconnect(&session_username, &client_ip, &session_app)
+                    .await;
                 return Ok(());
             }
         }
@@ -614,7 +679,10 @@ async fn handle_connection(
                 if is_session_pinning_query(sql) {
                     if !user_var_sticky {
                         user_var_sticky = true;
-                        log::debug!("[conn {}] session-pinning SET detected — enabling sticky connection", conn_id);
+                        log::debug!(
+                            "[conn {}] session-pinning SET detected — enabling sticky connection",
+                            conn_id
+                        );
                     }
                     // Record the statement so it can be re-applied if the sticky
                     // connection is later replaced (e.g. after a transaction kill
@@ -632,13 +700,18 @@ async fn handle_connection(
                         session.set_in_transaction(true);
                         tx_start = Some(Instant::now());
                         // Start a new trace for this transaction.
-                        active_trace = Some(ActiveTrace::new(conn_id, &session_username, &client_addr));
+                        active_trace =
+                            Some(ActiveTrace::new(conn_id, &session_username, &client_addr));
                     } else if upper.starts_with("COMMIT") || upper.starts_with("ROLLBACK") {
                         session.set_in_transaction(false);
                         tx_start = None;
                         // Finalise the trace and push to the store.
                         if let Some(trace) = active_trace.take() {
-                            let outcome = if upper.starts_with("COMMIT") { "commit" } else { "rollback" };
+                            let outcome = if upper.starts_with("COMMIT") {
+                                "commit"
+                            } else {
+                                "rollback"
+                            };
                             tracer_store.push(trace.finish(outcome));
                         }
                         // Release user-var sticky conn only when transaction ends
@@ -691,7 +764,9 @@ async fn handle_connection(
                 // idle (no query) longer than the configured limit. 0 = disabled.
                 if max_transaction_idle_ms > 0 {
                     if let Some(last_q) = last_query_in_tx {
-                        if tx_start.is_some() && last_q.elapsed().as_millis() as u64 > max_transaction_idle_ms {
+                        if tx_start.is_some()
+                            && last_q.elapsed().as_millis() as u64 > max_transaction_idle_ms
+                        {
                             session.set_in_transaction(false);
                             tx_start = None;
                             last_query_in_tx = None;
@@ -704,7 +779,8 @@ async fn handle_connection(
                             metrics.transactions_killed.fetch_add(1, Ordering::Relaxed);
                             log::warn!(
                                 "[conn {}] transaction killed: idle for > {}ms",
-                                conn_id, max_transaction_idle_ms
+                                conn_id,
+                                max_transaction_idle_ms
                             );
                             if let Err(e) = session
                                 .write_error(
@@ -737,10 +813,14 @@ async fn handle_connection(
                 if !session.allow_writes() && matches!(intent, QueryIntent::Write) {
                     log::warn!(
                         "[conn {}] user '{}' attempted write — denied (read-only)",
-                        conn_id, session.username()
+                        conn_id,
+                        session.username()
                     );
                     if let Err(e) = session
-                        .write_error("1290", "User is not allowed to write (read-only proxy account)")
+                        .write_error(
+                            "1290",
+                            "User is not allowed to write (read-only proxy account)",
+                        )
                         .await
                     {
                         log::debug!("Write error packet failed: {}", e);
@@ -795,13 +875,13 @@ async fn handle_connection(
                         let col_name = b"VERSION()";
                         // Column definition packet
                         let mut col_def: Vec<u8> = Vec::new();
-                        col_def.extend(lc_str(b"def"));   // catalog
-                        col_def.extend(lc_str(b""));       // schema
-                        col_def.extend(lc_str(b""));       // table
-                        col_def.extend(lc_str(b""));       // org_table
-                        col_def.extend(lc_str(col_name));  // name
-                        col_def.extend(lc_str(col_name));  // org_name
-                        col_def.push(0x0c);                // length of fixed-length fields
+                        col_def.extend(lc_str(b"def")); // catalog
+                        col_def.extend(lc_str(b"")); // schema
+                        col_def.extend(lc_str(b"")); // table
+                        col_def.extend(lc_str(b"")); // org_table
+                        col_def.extend(lc_str(col_name)); // name
+                        col_def.extend(lc_str(col_name)); // org_name
+                        col_def.push(0x0c); // length of fixed-length fields
                         col_def.extend_from_slice(&[0x2d, 0x00]); // charset utf8
                         col_def.extend_from_slice(&[0x1e, 0x00, 0x00, 0x00]); // col_length
                         col_def.push(0xfd); // MYSQL_TYPE_VAR_STRING
@@ -811,11 +891,11 @@ async fn handle_connection(
                         let eof = [0xfe_u8, 0x00, 0x00, 0x02, 0x00];
                         let row_data = lc_str(version_str);
                         let mut resp: Vec<u8> = Vec::new();
-                        resp.extend(mysql_pkt(&[0x01], 1));     // col count
-                        resp.extend(mysql_pkt(&col_def, 2));    // col def
-                        resp.extend(mysql_pkt(&eof, 3));        // EOF
-                        resp.extend(mysql_pkt(&row_data, 4));   // row
-                        resp.extend(mysql_pkt(&eof, 5));        // EOF
+                        resp.extend(mysql_pkt(&[0x01], 1)); // col count
+                        resp.extend(mysql_pkt(&col_def, 2)); // col def
+                        resp.extend(mysql_pkt(&eof, 3)); // EOF
+                        resp.extend(mysql_pkt(&row_data, 4)); // row
+                        resp.extend(mysql_pkt(&eof, 5)); // EOF
                         if let Err(e) = session.write_response(&resp).await {
                             log::debug!("VERSION response write error: {}", e);
                         }
@@ -830,16 +910,23 @@ async fn handle_connection(
                         metrics.sqli_blocked.fetch_add(1, Ordering::Relaxed);
                         log::warn!(
                             "[conn {}] SQL injection blocked (user={} ip={}): matched pattern {}",
-                            conn_id, session.username(), client_ip, pattern
+                            conn_id,
+                            session.username(),
+                            client_ip,
+                            pattern
                         );
                         audit_logger.log(
-                            session.username(), &client_ip, sql,
-                            "blocked:sqli", 0.0, true,
+                            session.username(),
+                            &client_ip,
+                            sql,
+                            "blocked:sqli",
+                            0.0,
+                            true,
                         );
                         error_events.push(ErrorEvent::new(
                             0,
                             format!("SQL injection blocked: {}", pattern),
-                            &fingerprint(sql),
+                            fingerprint(sql),
                             "",
                             &client_ip,
                             session.username(),
@@ -861,16 +948,22 @@ async fn handle_connection(
                     metrics.whitelist_blocked.fetch_add(1, Ordering::Relaxed);
                     log::warn!(
                         "[conn {}] whitelist blocked (user={} ip={}): query not in allowlist",
-                        conn_id, session.username(), client_ip
+                        conn_id,
+                        session.username(),
+                        client_ip
                     );
                     audit_logger.log(
-                        session.username(), &client_ip, sql,
-                        "blocked:whitelist", 0.0, true,
+                        session.username(),
+                        &client_ip,
+                        sql,
+                        "blocked:whitelist",
+                        0.0,
+                        true,
                     );
                     error_events.push(ErrorEvent::new(
                         0,
                         "Query not permitted: not in the query allowlist",
-                        &fingerprint(sql),
+                        fingerprint(sql),
                         "",
                         &client_ip,
                         session.username(),
@@ -914,7 +1007,9 @@ async fn handle_connection(
 
                 let is_error = result.is_err();
                 // Read-Your-Own-Writes: set/extend the RYOW window after a successful write.
-                if !is_error && !was_read && read_your_own_writes_ms > 0
+                if !is_error
+                    && !was_read
+                    && read_your_own_writes_ms > 0
                     && matches!(intent, QueryIntent::Write)
                 {
                     ryow_until = Some(
@@ -983,7 +1078,9 @@ async fn handle_connection(
                             let now = Instant::now();
                             // Reset window if expired.
                             if error_window_start
-                                .map(|s| now.duration_since(s).as_secs() >= client_error_window_secs)
+                                .map(|s| {
+                                    now.duration_since(s).as_secs() >= client_error_window_secs
+                                })
                                 .unwrap_or(false)
                             {
                                 consecutive_errors = 0;
@@ -1017,13 +1114,15 @@ async fn handle_connection(
                 user_registry.on_query(&session_username).await;
 
                 // Update per-app / per-IP / per-user analytics.
-                app_analytics.on_query(
-                    &session_username,
-                    &client_ip,
-                    &session_app,
-                    was_read,
-                    matches!(intent, QueryIntent::Write),
-                ).await;
+                app_analytics
+                    .on_query(
+                        &session_username,
+                        &client_ip,
+                        &session_app,
+                        was_read,
+                        matches!(intent, QueryIntent::Write),
+                    )
+                    .await;
 
                 // Record query duration in the appropriate histogram (lock-free).
                 let elapsed = t0.elapsed();
@@ -1038,8 +1137,12 @@ async fn handle_connection(
                 if audit_logger.is_active() {
                     let destination = if was_read { "replica" } else { "primary" };
                     audit_logger.log(
-                        &session_username, &client_ip, sql,
-                        destination, secs * 1000.0, is_error,
+                        &session_username,
+                        &client_ip,
+                        sql,
+                        destination,
+                        secs * 1000.0,
+                        is_error,
                     );
                 }
 
@@ -1076,7 +1179,10 @@ async fn handle_connection(
             Command::Other(raw) => {
                 // Log CDC/binary log commands for observability — always routed to primary.
                 use crate::protocol::mysql::command as cmd;
-                if matches!(raw.first().copied(), Some(cmd::COM_BINLOG_DUMP) | Some(cmd::COM_BINLOG_DUMP_GTID)) {
+                if matches!(
+                    raw.first().copied(),
+                    Some(cmd::COM_BINLOG_DUMP) | Some(cmd::COM_BINLOG_DUMP_GTID)
+                ) {
                     log::warn!(
                         "[conn {}] CDC command received (COM_BINLOG_DUMP) user={} — routing to primary",
                         conn_id, session.username()
@@ -1114,7 +1220,9 @@ async fn handle_connection(
                 // Analytics for COM_STMT_EXECUTE.
                 if raw.first().copied() == Some(cmd::COM_STMT_EXECUTE) {
                     user_registry.on_query(&session_username).await;
-                    app_analytics.on_query(&session_username, &client_ip, &session_app, false, false).await;
+                    app_analytics
+                        .on_query(&session_username, &client_ip, &session_app, false, false)
+                        .await;
 
                     if log_prepared_params && raw.len() > 5 {
                         let param_bytes = &raw[5..]; // skip cmd byte + stmt_id (4 bytes)
@@ -1122,7 +1230,11 @@ async fn handle_connection(
                             "[conn {}] COM_STMT_EXECUTE params ({}B): {}",
                             conn_id,
                             param_bytes.len(),
-                            param_bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
+                            param_bytes
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         );
                     }
                 }
@@ -1191,7 +1303,9 @@ async fn handle_connection(
     }
 
     user_registry.on_disconnect(&session_username).await;
-    app_analytics.on_disconnect(&session_username, &client_ip, &session_app).await;
+    app_analytics
+        .on_disconnect(&session_username, &client_ip, &session_app)
+        .await;
     Ok(())
 }
 
@@ -1241,7 +1355,6 @@ async fn parse_proxy_header(stream: &mut TcpStream) -> Option<String> {
     }
     None
 }
-
 
 ///
 /// Patterns detected (case-insensitive):
@@ -1297,7 +1410,10 @@ fn is_session_pinning_query(sql: &str) -> bool {
             .trim_start_matches("LOCAL")
             .trim_start();
         // Match: SET [SESSION|LOCAL] <identifier> = / :=
-        let first_word = var_name.split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap_or("");
+        let first_word = var_name
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            .unwrap_or("");
         if !first_word.is_empty() {
             // Anything that looks like SET <var> = counts as a session pin.
             // Excludes: SET NAMES, SET CHARACTER SET (handled above).
@@ -1311,4 +1427,3 @@ fn is_session_pinning_query(sql: &str) -> bool {
 
     false
 }
-

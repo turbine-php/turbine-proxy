@@ -9,36 +9,36 @@
 
 #![allow(unused)]
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use sha2::{Digest as Sha2Digest, Sha256};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls;
+use tokio_rustls::TlsAcceptor;
 
 use crate::config::{BackendConfig, TlsMode, UserConfig};
 use crate::protocol::{
-    BackendConnection, BackendResponse, ClientAuthConfig, ClientSession,
-    Command, DatabaseProtocol, ProtocolError, Result,
+    BackendConnection, BackendResponse, ClientAuthConfig, ClientSession, Command, DatabaseProtocol,
+    ProtocolError, Result,
 };
 
-type BoxRead  = Box<dyn tokio::io::AsyncRead  + Send + Sync + Unpin>;
+type BoxRead = Box<dyn tokio::io::AsyncRead + Send + Sync + Unpin>;
 type BoxWrite = Box<dyn tokio::io::AsyncWrite + Send + Sync + Unpin>;
 
 // ─── Protocol version constants ───────────────────────────────────────────────
 
-const PROTOCOL_V3:     u32 = 196608;   // 3.0
+const PROTOCOL_V3: u32 = 196608; // 3.0
 const SSL_REQUEST_CODE: u32 = 80877103;
-const CANCEL_CODE:      u32 = 80877102;
+const CANCEL_CODE: u32 = 80877102;
 
 // Auth method codes (R message payload first 4 bytes)
-const AUTH_OK:            u32 = 0;
-const AUTH_CLEARTEXT:     u32 = 3;
-const AUTH_MD5:           u32 = 5;
-const AUTH_SASL:          u32 = 10;
+const AUTH_OK: u32 = 0;
+const AUTH_CLEARTEXT: u32 = 3;
+const AUTH_MD5: u32 = 5;
+const AUTH_SASL: u32 = 10;
 const AUTH_SASL_CONTINUE: u32 = 11;
-const AUTH_SASL_FINAL:    u32 = 12;
+const AUTH_SASL_FINAL: u32 = 12;
 
 // ─── Crypto helpers ───────────────────────────────────────────────────────────
 
@@ -104,27 +104,42 @@ fn b64_decode(s: &str) -> std::result::Result<Vec<u8>, ProtocolError> {
 /// Read one regular PG backend/frontend message: type_byte + be_u32_length + payload.
 async fn read_pg_msg(reader: &mut BoxRead) -> Result<(u8, Vec<u8>)> {
     let mut hdr = [0u8; 5];
-    reader.read_exact(&mut hdr).await.map_err(ProtocolError::Io)?;
-    let type_byte  = hdr[0];
-    let full_len   = u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
+    reader
+        .read_exact(&mut hdr)
+        .await
+        .map_err(ProtocolError::Io)?;
+    let type_byte = hdr[0];
+    let full_len = u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
     if full_len < 4 {
-        return Err(ProtocolError::InvalidFormat(format!("PG msg too short: {}", full_len)));
+        return Err(ProtocolError::InvalidFormat(format!(
+            "PG msg too short: {}",
+            full_len
+        )));
     }
     let mut payload = vec![0u8; full_len - 4];
-    reader.read_exact(&mut payload).await.map_err(ProtocolError::Io)?;
+    reader
+        .read_exact(&mut payload)
+        .await
+        .map_err(ProtocolError::Io)?;
     Ok((type_byte, payload))
 }
 
 /// Read the first client startup message (no type byte — only length + payload).
 async fn read_startup_msg(reader: &mut BoxRead) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf).await.map_err(ProtocolError::Io)?;
+    reader
+        .read_exact(&mut len_buf)
+        .await
+        .map_err(ProtocolError::Io)?;
     let full_len = u32::from_be_bytes(len_buf) as usize;
     if full_len < 4 {
         return Err(ProtocolError::InvalidFormat("startup msg too short".into()));
     }
     let mut payload = vec![0u8; full_len - 4];
-    reader.read_exact(&mut payload).await.map_err(ProtocolError::Io)?;
+    reader
+        .read_exact(&mut payload)
+        .await
+        .map_err(ProtocolError::Io)?;
     Ok(payload)
 }
 
@@ -152,8 +167,14 @@ fn build_pg_raw(type_byte: u8, payload: &[u8]) -> Vec<u8> {
 fn parse_startup_params(payload: &[u8]) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     // Skip 4-byte protocol version
-    let data = if payload.len() >= 4 { &payload[4..] } else { return map };
-    let mut parts = data.split(|&b| b == 0).map(|s| String::from_utf8_lossy(s).into_owned());
+    let data = if payload.len() >= 4 {
+        &payload[4..]
+    } else {
+        return map;
+    };
+    let mut parts = data
+        .split(|&b| b == 0)
+        .map(|s| String::from_utf8_lossy(s).into_owned());
     loop {
         let key = match parts.next() {
             Some(k) if !k.is_empty() => k,
@@ -169,23 +190,32 @@ fn parse_startup_params(payload: &[u8]) -> std::collections::HashMap<String, Str
 fn parse_pg_error(payload: &[u8]) -> String {
     let mut pos = 0;
     let mut severity = String::new();
-    let mut message  = String::new();
+    let mut message = String::new();
     while pos < payload.len() {
         let field_type = payload[pos];
         pos += 1;
-        if field_type == 0 { break; }
-        let end = payload[pos..].iter().position(|&b| b == 0).unwrap_or(payload.len() - pos);
+        if field_type == 0 {
+            break;
+        }
+        let end = payload[pos..]
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(payload.len() - pos);
         let val = String::from_utf8_lossy(&payload[pos..pos + end]).into_owned();
         pos += end + 1;
         match field_type {
             b'S' => severity = val,
-            b'M' => message  = val,
+            b'M' => message = val,
             _ => {}
         }
     }
-    if message.is_empty() { "unknown PostgreSQL error".to_string() }
-    else if severity.is_empty() { message }
-    else { format!("{}: {}", severity, message) }
+    if message.is_empty() {
+        "unknown PostgreSQL error".to_string()
+    } else if severity.is_empty() {
+        message
+    } else {
+        format!("{}: {}", severity, message)
+    }
 }
 
 /// Scan response bytes for the last ReadyForQuery status byte.
@@ -194,9 +224,18 @@ pub fn extract_ready_status(bytes: &[u8]) -> Option<u8> {
     let mut last = None;
     while pos + 5 <= bytes.len() {
         let t = bytes[pos];
-        let len = u32::from_be_bytes([bytes[pos+1], bytes[pos+2], bytes[pos+3], bytes[pos+4]]) as usize;
-        if len < 4 || pos + 1 + len > bytes.len() { break; }
-        if t == b'Z' && len == 5 { last = Some(bytes[pos + 5]); }
+        let len = u32::from_be_bytes([
+            bytes[pos + 1],
+            bytes[pos + 2],
+            bytes[pos + 3],
+            bytes[pos + 4],
+        ]) as usize;
+        if len < 4 || pos + 1 + len > bytes.len() {
+            break;
+        }
+        if t == b'Z' && len == 5 {
+            last = Some(bytes[pos + 5]);
+        }
         pos += 1 + len;
     }
     last
@@ -215,11 +254,17 @@ pub struct PostgreSQLProtocol {
 
 impl PostgreSQLProtocol {
     pub fn new(users: Vec<UserConfig>) -> Self {
-        Self { users: Arc::new(users), tls_acceptor: None }
+        Self {
+            users: Arc::new(users),
+            tls_acceptor: None,
+        }
     }
 
     pub fn open() -> Self {
-        Self { users: Arc::new(Vec::new()), tls_acceptor: None }
+        Self {
+            users: Arc::new(Vec::new()),
+            tls_acceptor: None,
+        }
     }
 
     /// Create a new protocol handler that presents a TLS certificate to clients.
@@ -239,7 +284,7 @@ impl DatabaseProtocol for PostgreSQLProtocol {
         config: &ClientAuthConfig,
     ) -> Result<Box<dyn ClientSession>> {
         let (reader, writer) = tokio::io::split(stream);
-        let mut reader: BoxRead  = Box::new(reader);
+        let mut reader: BoxRead = Box::new(reader);
         let mut writer: BoxWrite = Box::new(writer);
 
         // ── Read startup message ─────────────────────────────────────────────
@@ -275,29 +320,35 @@ impl DatabaseProtocol for PostgreSQLProtocol {
         }
 
         if version_code == CANCEL_CODE {
-            return Err(ProtocolError::InvalidFormat("cancel request not supported".into()));
+            return Err(ProtocolError::InvalidFormat(
+                "cancel request not supported".into(),
+            ));
         }
 
         self.accept_startup(startup, reader, writer, config).await
     }
 
-    async fn connect_backend(
-        &self,
-        config: &BackendConfig,
-    ) -> Result<Box<dyn BackendConnection>> {
+    async fn connect_backend(&self, config: &BackendConfig) -> Result<Box<dyn BackendConnection>> {
         let stream = if config.resolution_family == "ipv4" || config.resolution_family == "ipv6" {
             let want_v4 = config.resolution_family == "ipv4";
             let sa = tokio::net::lookup_host(&config.addr)
                 .await
                 .map_err(ProtocolError::Io)?
                 .find(|s| if want_v4 { s.is_ipv4() } else { s.is_ipv6() })
-                .ok_or_else(|| ProtocolError::Io(std::io::Error::new(
-                    std::io::ErrorKind::AddrNotAvailable,
-                    format!("no {} address for {}", config.resolution_family, config.addr),
-                )))?;
+                .ok_or_else(|| {
+                    ProtocolError::Io(std::io::Error::new(
+                        std::io::ErrorKind::AddrNotAvailable,
+                        format!(
+                            "no {} address for {}",
+                            config.resolution_family, config.addr
+                        ),
+                    ))
+                })?;
             TcpStream::connect(sa).await.map_err(ProtocolError::Io)?
         } else {
-            TcpStream::connect(&config.addr).await.map_err(ProtocolError::Io)?
+            TcpStream::connect(&config.addr)
+                .await
+                .map_err(ProtocolError::Io)?
         };
         stream.set_nodelay(true).map_err(ProtocolError::Io)?;
 
@@ -310,23 +361,32 @@ impl DatabaseProtocol for PostgreSQLProtocol {
 
             use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
             let (mut raw_rd, mut raw_wr) = tokio::io::split(stream);
-            raw_wr.write_all(&tls_req).await.map_err(ProtocolError::Io)?;
+            raw_wr
+                .write_all(&tls_req)
+                .await
+                .map_err(ProtocolError::Io)?;
             raw_wr.flush().await.map_err(ProtocolError::Io)?;
 
             let mut resp = [0u8; 1];
-            raw_rd.read_exact(&mut resp).await.map_err(ProtocolError::Io)?;
+            raw_rd
+                .read_exact(&mut resp)
+                .await
+                .map_err(ProtocolError::Io)?;
 
             if resp[0] == b'S' {
                 // Backend supports TLS — upgrade
                 let connector = crate::protocol::mysql::tls::build_backend_connector(
                     &config.tls_mode,
                     config.tls_ca.as_deref(),
-                ).map_err(|e| ProtocolError::AuthFailed(e.to_string()))?;
+                )
+                .map_err(|e| ProtocolError::AuthFailed(e.to_string()))?;
 
                 // Need a domain name for TLS SNI — use the host part of addr
                 let host = config.addr.split(':').next().unwrap_or("localhost");
-                let domain = rustls::pki_types::ServerName::try_from(host.to_string())
-                    .map_err(|e| ProtocolError::AuthFailed(format!("invalid TLS host '{}': {}", host, e)))?;
+                let domain =
+                    rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| {
+                        ProtocolError::AuthFailed(format!("invalid TLS host '{}': {}", host, e))
+                    })?;
 
                 // Reconnect the split halves — we need the raw stream for TLS upgrade.
                 // Since we already split, we use a more direct approach: re-connect.
@@ -342,7 +402,10 @@ impl DatabaseProtocol for PostgreSQLProtocol {
                         config.addr, config.tls_mode,
                     )));
                 }
-                log::debug!("[pg] Backend {} declined TLS — using plain connection", config.addr);
+                log::debug!(
+                    "[pg] Backend {} declined TLS — using plain connection",
+                    config.addr
+                );
                 (Box::new(raw_rd) as BoxRead, Box::new(raw_wr) as BoxWrite)
             }
         } else {
@@ -350,7 +413,7 @@ impl DatabaseProtocol for PostgreSQLProtocol {
             (Box::new(r) as BoxRead, Box::new(w) as BoxWrite)
         };
 
-        let mut reader: BoxRead  = reader;
+        let mut reader: BoxRead = reader;
         let mut writer: BoxWrite = writer;
 
         let backend_pid = pg_backend_auth(
@@ -359,7 +422,8 @@ impl DatabaseProtocol for PostgreSQLProtocol {
             &config.user,
             &config.password,
             config.database.as_deref().unwrap_or("postgres"),
-        ).await?;
+        )
+        .await?;
 
         // Execute init_connect statements
         for sql in &config.init_connect {
@@ -385,17 +449,19 @@ impl DatabaseProtocol for PostgreSQLProtocol {
         for sql in &config.init_connect {
             if let Err(e) = conn.execute_query(sql.as_bytes()).await {
                 log::warn!("[pg pool] init_connect failed (sql={:?}): {}", sql, e);
-                return Err(ProtocolError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("pg init_connect failed: {}", e),
-                )));
+                return Err(ProtocolError::Io(std::io::Error::other(format!(
+                    "pg init_connect failed: {}",
+                    e
+                ))));
             }
         }
 
         Ok(Box::new(conn))
     }
 
-    fn name(&self) -> &'static str { "postgres" }
+    fn name(&self) -> &'static str {
+        "postgres"
+    }
 }
 
 impl PostgreSQLProtocol {
@@ -407,9 +473,15 @@ impl PostgreSQLProtocol {
         config: &ClientAuthConfig,
     ) -> Result<Box<dyn ClientSession>> {
         let params = parse_startup_params(&startup);
-        let username  = params.get("user").cloned().unwrap_or_else(|| "postgres".to_string());
-        let database  = params.get("database").cloned().unwrap_or_else(|| "postgres".to_string());
-        let app_name  = params.get("application_name").cloned().unwrap_or_default();
+        let username = params
+            .get("user")
+            .cloned()
+            .unwrap_or_else(|| "postgres".to_string());
+        let database = params
+            .get("database")
+            .cloned()
+            .unwrap_or_else(|| "postgres".to_string());
+        let app_name = params.get("application_name").cloned().unwrap_or_default();
 
         // Look up user in users config
         let open_mode = self.users.is_empty();
@@ -420,15 +492,21 @@ impl PostgreSQLProtocol {
             if found.is_none() {
                 // Send ErrorResponse: role does not exist
                 let mut err_payload = Vec::new();
-                err_payload.push(b'S'); err_payload.extend_from_slice(b"FATAL\0");
-                err_payload.push(b'C'); err_payload.extend_from_slice(b"28000\0");
+                err_payload.push(b'S');
+                err_payload.extend_from_slice(b"FATAL\0");
+                err_payload.push(b'C');
+                err_payload.extend_from_slice(b"28000\0");
                 err_payload.push(b'M');
-                err_payload.extend_from_slice(format!("role \"{}\" does not exist", username).as_bytes());
+                err_payload
+                    .extend_from_slice(format!("role \"{}\" does not exist", username).as_bytes());
                 err_payload.push(0);
                 err_payload.push(0);
                 write_pg_msg(&mut writer, b'E', &err_payload).await?;
                 writer.flush().await.map_err(ProtocolError::Io)?;
-                return Err(ProtocolError::AuthFailed(format!("unknown user: {}", username)));
+                return Err(ProtocolError::AuthFailed(format!(
+                    "unknown user: {}",
+                    username
+                )));
             }
             (found.map(|u| u.allow_writes).unwrap_or(true), false)
         };
@@ -436,14 +514,16 @@ impl PostgreSQLProtocol {
         // Request cleartext password (unless open mode)
         let mut verified = open_mode;
         if !open_mode {
-            let user_password = self.users.iter()
+            let user_password = self
+                .users
+                .iter()
                 .find(|u| u.name == username)
                 .map(|u| u.password.clone())
                 .unwrap_or_default();
 
             // Send AuthenticationCleartextPassword
             let mut auth_req = [0u8; 4];
-            auth_req.copy_from_slice(&(AUTH_CLEARTEXT as u32).to_be_bytes());
+            auth_req.copy_from_slice(&AUTH_CLEARTEXT.to_be_bytes());
             write_pg_msg(&mut writer, b'R', &auth_req).await?;
             writer.flush().await.map_err(ProtocolError::Io)?;
 
@@ -452,14 +532,16 @@ impl PostgreSQLProtocol {
             if t != b'p' {
                 return Err(ProtocolError::AuthFailed("expected PasswordMessage".into()));
             }
-            let received = String::from_utf8_lossy(
-                payload.strip_suffix(b"\0").unwrap_or(&payload)
-            ).into_owned();
+            let received = String::from_utf8_lossy(payload.strip_suffix(b"\0").unwrap_or(&payload))
+                .into_owned();
             if received != user_password {
                 let mut err = Vec::new();
-                err.push(b'S'); err.extend_from_slice(b"FATAL\0");
-                err.push(b'C'); err.extend_from_slice(b"28P01\0");
-                err.push(b'M'); err.extend_from_slice(b"password authentication failed\0");
+                err.push(b'S');
+                err.extend_from_slice(b"FATAL\0");
+                err.push(b'C');
+                err.extend_from_slice(b"28P01\0");
+                err.push(b'M');
+                err.extend_from_slice(b"password authentication failed\0");
                 err.push(0);
                 write_pg_msg(&mut writer, b'E', &err).await?;
                 writer.flush().await.map_err(ProtocolError::Io)?;
@@ -483,19 +565,21 @@ impl PostgreSQLProtocol {
         ];
         for (k, v) in &params_to_send {
             let mut p = Vec::new();
-            p.extend_from_slice(k.as_bytes()); p.push(0);
-            p.extend_from_slice(v.as_bytes()); p.push(0);
+            p.extend_from_slice(k.as_bytes());
+            p.push(0);
+            p.extend_from_slice(v.as_bytes());
+            p.push(0);
             write_pg_msg(&mut writer, b'S', &p).await?;
         }
 
         // BackendKeyData (PID + secret key)
         let mut bkd = Vec::with_capacity(8);
-        bkd.extend_from_slice(&(config.connection_id as u32).to_be_bytes());
+        bkd.extend_from_slice(&config.connection_id.to_be_bytes());
         bkd.extend_from_slice(&(config.connection_id.wrapping_mul(1_103_515_245)).to_be_bytes());
         write_pg_msg(&mut writer, b'K', &bkd).await?;
 
         // ReadyForQuery (idle)
-        write_pg_msg(&mut writer, b'Z', &[b'I']).await?;
+        write_pg_msg(&mut writer, b'Z', b"I").await?;
         writer.flush().await.map_err(ProtocolError::Io)?;
 
         Ok(Box::new(PgClientSession {
@@ -530,7 +614,10 @@ impl ClientSession for PgClientSession {
         match type_byte {
             b'Q' => {
                 // Simple Query — strip null terminator
-                let end = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+                let end = payload
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(payload.len());
                 Ok(Command::Query(payload[..end].to_vec()))
             }
 
@@ -542,7 +629,9 @@ impl ClientSession for PgClientSession {
                 loop {
                     let (t, p) = read_pg_msg(&mut self.reader).await?;
                     buf.extend(build_pg_raw(t, &p));
-                    if t == b'S' { break; } // Sync terminates the pipeline
+                    if t == b'S' {
+                        break;
+                    } // Sync terminates the pipeline
                 }
                 Ok(Command::Stmt(buf))
             }
@@ -555,23 +644,31 @@ impl ClientSession for PgClientSession {
     }
 
     async fn write_response(&mut self, bytes: &[u8]) -> Result<()> {
-        self.writer.write_all(bytes).await.map_err(ProtocolError::Io)
+        self.writer
+            .write_all(bytes)
+            .await
+            .map_err(ProtocolError::Io)
     }
 
     async fn write_error(&mut self, code: &str, message: &str) -> Result<()> {
         // Map MySQL-style numeric codes or generic strings to PG SQLSTATE
         let sqlstate = match code {
             "1045" | "1044" | "28000" => "28000", // invalid auth
-            "1040" | "53300"          => "53300", // too many connections
-            "1064" | "42601"          => "42601", // syntax error
-            "1290" | "42501"          => "42501", // insufficient privilege
-            "1205" | "40P01"          => "40P01", // deadlock / lock timeout
-            _                         => "XX000", // internal error
+            "1040" | "53300" => "53300",          // too many connections
+            "1064" | "42601" => "42601",          // syntax error
+            "1290" | "42501" => "42501",          // insufficient privilege
+            "1205" | "40P01" => "40P01",          // deadlock / lock timeout
+            _ => "XX000",                         // internal error
         };
         let mut p = Vec::new();
-        p.push(b'S'); p.extend_from_slice(b"ERROR\0");
-        p.push(b'C'); p.extend_from_slice(sqlstate.as_bytes()); p.push(0);
-        p.push(b'M'); p.extend_from_slice(message.as_bytes()); p.push(0);
+        p.push(b'S');
+        p.extend_from_slice(b"ERROR\0");
+        p.push(b'C');
+        p.extend_from_slice(sqlstate.as_bytes());
+        p.push(0);
+        p.push(b'M');
+        p.extend_from_slice(message.as_bytes());
+        p.push(0);
         p.push(0);
         write_pg_msg(&mut self.writer, b'E', &p).await?;
         // ReadyForQuery after error
@@ -583,7 +680,7 @@ impl ClientSession for PgClientSession {
     async fn send_ok(&mut self) -> Result<()> {
         // Used for proxy-generated OK responses (no direct PG equivalent)
         write_pg_msg(&mut self.writer, b'C', b"OK\0").await?;
-        write_pg_msg(&mut self.writer, b'Z', &[b'I']).await?;
+        write_pg_msg(&mut self.writer, b'Z', b"I").await?;
         Ok(())
     }
 
@@ -591,29 +688,41 @@ impl ClientSession for PgClientSession {
         self.writer.flush().await.map_err(ProtocolError::Io)
     }
 
-    fn is_in_transaction(&self) -> bool { self.in_transaction }
-    fn set_in_transaction(&mut self, v: bool) { self.in_transaction = v; }
-    fn username(&self) -> &str { &self.username }
-    fn allow_writes(&self) -> bool { self.allow_writes }
-    fn app_name(&self) -> &str { &self.app_name }
-    fn database(&self) -> &str { &self.database }
+    fn is_in_transaction(&self) -> bool {
+        self.in_transaction
+    }
+    fn set_in_transaction(&mut self, v: bool) {
+        self.in_transaction = v;
+    }
+    fn username(&self) -> &str {
+        &self.username
+    }
+    fn allow_writes(&self) -> bool {
+        self.allow_writes
+    }
+    fn app_name(&self) -> &str {
+        &self.app_name
+    }
+    fn database(&self) -> &str {
+        &self.database
+    }
 }
 
 // ─── PgBackendConnection ──────────────────────────────────────────────────────
 
 pub struct PgBackendConnection {
-    reader:         BoxRead,
-    writer:         BoxWrite,
+    reader: BoxRead,
+    writer: BoxWrite,
     in_transaction: bool,
-    healthy:        bool,
-    backend_pid:    u32,
+    healthy: bool,
+    backend_pid: u32,
 }
 
 impl PgBackendConnection {
     /// Read backend messages until ReadyForQuery ('Z').
     /// Returns all bytes collected (ready to forward verbatim to the client).
     async fn collect_until_ready(&mut self) -> Result<BackendResponse> {
-        let mut all   = Vec::new();
+        let mut all = Vec::new();
         let mut is_err = false;
         let mut affected: Option<u64> = None;
 
@@ -638,7 +747,9 @@ impl PgBackendConnection {
                     self.in_transaction = status == b'T' || status == b'E';
                     break;
                 }
-                b'E' => { is_err = true; }
+                b'E' => {
+                    is_err = true;
+                }
                 b'C' => {
                     // CommandComplete: "INSERT 0 N" / "UPDATE N" / "DELETE N"
                     if let Ok(s) = std::str::from_utf8(&payload) {
@@ -650,7 +761,11 @@ impl PgBackendConnection {
             }
         }
 
-        Ok(BackendResponse { bytes: all, affected_rows: affected, is_error: is_err })
+        Ok(BackendResponse {
+            bytes: all,
+            affected_rows: affected,
+            is_error: is_err,
+        })
     }
 }
 
@@ -664,13 +779,19 @@ impl BackendConnection for PgBackendConnection {
         msg.extend_from_slice(&payload_len.to_be_bytes());
         msg.extend_from_slice(sql);
         msg.push(0); // null terminator
-        self.writer.write_all(&msg).await.map_err(ProtocolError::Io)?;
+        self.writer
+            .write_all(&msg)
+            .await
+            .map_err(ProtocolError::Io)?;
         self.writer.flush().await.map_err(ProtocolError::Io)?;
         self.collect_until_ready().await
     }
 
     async fn send_raw(&mut self, packet: &[u8]) -> Result<BackendResponse> {
-        self.writer.write_all(packet).await.map_err(ProtocolError::Io)?;
+        self.writer
+            .write_all(packet)
+            .await
+            .map_err(ProtocolError::Io)?;
         self.writer.flush().await.map_err(ProtocolError::Io)?;
         self.collect_until_ready().await
     }
@@ -679,18 +800,24 @@ impl BackendConnection for PgBackendConnection {
         self.execute_query(b"SELECT 1").await.map(|_| ())
     }
 
-    fn is_healthy(&self)      -> bool      { self.healthy }
-    fn in_transaction(&self)  -> bool      { self.in_transaction }
-    fn backend_conn_id(&self) -> Option<u32> { Some(self.backend_pid) }
+    fn is_healthy(&self) -> bool {
+        self.healthy
+    }
+    fn in_transaction(&self) -> bool {
+        self.in_transaction
+    }
+    fn backend_conn_id(&self) -> Option<u32> {
+        Some(self.backend_pid)
+    }
 }
 
 // ─── Backend auth ─────────────────────────────────────────────────────────────
 
 /// Authenticate with a PostgreSQL backend and return the backend PID.
 async fn pg_backend_auth(
-    reader:   &mut BoxRead,
-    writer:   &mut BoxWrite,
-    user:     &str,
+    reader: &mut BoxRead,
+    writer: &mut BoxWrite,
+    user: &str,
     password: &str,
     database: &str,
 ) -> Result<u32> {
@@ -698,13 +825,18 @@ async fn pg_backend_auth(
     let mut body = Vec::new();
     body.extend_from_slice(&PROTOCOL_V3.to_be_bytes());
     body.extend_from_slice(b"user\0");
-    body.extend_from_slice(user.as_bytes()); body.push(0);
+    body.extend_from_slice(user.as_bytes());
+    body.push(0);
     body.extend_from_slice(b"database\0");
-    body.extend_from_slice(database.as_bytes()); body.push(0);
+    body.extend_from_slice(database.as_bytes());
+    body.push(0);
     body.extend_from_slice(b"application_name\0turbineproxy\0");
     body.push(0); // parameter list terminator
     let total_len = (body.len() + 4) as u32;
-    writer.write_all(&total_len.to_be_bytes()).await.map_err(ProtocolError::Io)?;
+    writer
+        .write_all(&total_len.to_be_bytes())
+        .await
+        .map_err(ProtocolError::Io)?;
     writer.write_all(&body).await.map_err(ProtocolError::Io)?;
     writer.flush().await.map_err(ProtocolError::Io)?;
 
@@ -727,7 +859,11 @@ async fn pg_backend_auth(
                         writer.flush().await.map_err(ProtocolError::Io)?;
                     }
                     AUTH_MD5 => {
-                        let salt = if payload.len() >= 8 { &payload[4..8] } else { &[0u8; 4] };
+                        let salt = if payload.len() >= 8 {
+                            &payload[4..8]
+                        } else {
+                            &[0u8; 4]
+                        };
                         let inner = md5_hex(&[password.as_bytes(), user.as_bytes()].concat());
                         let outer = md5_hex(&[inner.as_bytes(), salt].concat());
                         let resp = format!("md5{}\0", outer);
@@ -739,16 +875,18 @@ async fn pg_backend_auth(
                         scram_auth(reader, writer, user, password, &payload[4..]).await?;
                     }
                     other => {
-                        return Err(ProtocolError::AuthFailed(
-                            format!("unsupported PG auth method {}", other)
-                        ));
+                        return Err(ProtocolError::AuthFailed(format!(
+                            "unsupported PG auth method {}",
+                            other
+                        )));
                     }
                 }
             }
             b'S' => {} // ParameterStatus — ignore
             b'K' => {
                 if payload.len() >= 4 {
-                    backend_pid = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                    backend_pid =
+                        u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
                 }
             }
             b'Z' => break, // ReadyForQuery — auth complete
@@ -765,29 +903,33 @@ async fn pg_backend_auth(
 // ─── SCRAM-SHA-256 ────────────────────────────────────────────────────────────
 
 async fn scram_auth(
-    reader:       &mut BoxRead,
-    writer:       &mut BoxWrite,
-    user:         &str,
-    password:     &str,
-    mechanisms:   &[u8],
+    reader: &mut BoxRead,
+    writer: &mut BoxWrite,
+    user: &str,
+    password: &str,
+    mechanisms: &[u8],
 ) -> Result<()> {
     // Verify SCRAM-SHA-256 is offered
     let mech_str = std::str::from_utf8(mechanisms).unwrap_or("");
     if !mech_str.split('\0').any(|m| m == "SCRAM-SHA-256") {
-        return Err(ProtocolError::AuthFailed("SCRAM-SHA-256 not offered".into()));
+        return Err(ProtocolError::AuthFailed(
+            "SCRAM-SHA-256 not offered".into(),
+        ));
     }
 
     // Generate 18-byte random nonce, base64-encoded
     let nonce_raw: [u8; 18] = {
         let mut arr = [0u8; 18];
-        for b in arr.iter_mut() { *b = rand::random::<u8>(); }
+        for b in arr.iter_mut() {
+            *b = rand::random::<u8>();
+        }
         arr
     };
     let client_nonce = b64_encode(&nonce_raw);
 
     // client-first-message-bare
     let cfmb = format!("n={},r={}", user, client_nonce);
-    let cfm  = format!("n,,{}", cfmb);
+    let cfm = format!("n,,{}", cfmb);
 
     // SASLInitialResponse: "SCRAM-SHA-256\0" + be_i32(len) + cfm
     let mut sasl_init = b"SCRAM-SHA-256\0".to_vec();
@@ -803,37 +945,46 @@ async fn scram_auth(
     }
     let cont_method = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
     if cont_method != AUTH_SASL_CONTINUE {
-        return Err(ProtocolError::AuthFailed(format!("expected 11, got {}", cont_method)));
+        return Err(ProtocolError::AuthFailed(format!(
+            "expected 11, got {}",
+            cont_method
+        )));
     }
     let sfm = std::str::from_utf8(&payload[4..])
         .map_err(|_| ProtocolError::AuthFailed("invalid SCRAM server-first".into()))?;
 
     // Parse server-first: r=...,s=...,i=...
-    let mut full_nonce  = "";
-    let mut salt_b64    = "";
-    let mut iterations  = 4096u32;
+    let mut full_nonce = "";
+    let mut salt_b64 = "";
+    let mut iterations = 4096u32;
     for part in sfm.split(',') {
-        if let Some(v) = part.strip_prefix("r=") { full_nonce = v; }
-        else if let Some(v) = part.strip_prefix("s=") { salt_b64 = v; }
-        else if let Some(v) = part.strip_prefix("i=") { iterations = v.parse().unwrap_or(4096); }
+        if let Some(v) = part.strip_prefix("r=") {
+            full_nonce = v;
+        } else if let Some(v) = part.strip_prefix("s=") {
+            salt_b64 = v;
+        } else if let Some(v) = part.strip_prefix("i=") {
+            iterations = v.parse().unwrap_or(4096);
+        }
     }
     if !full_nonce.starts_with(&client_nonce) {
         return Err(ProtocolError::AuthFailed("SCRAM nonce mismatch".into()));
     }
 
     let salt = b64_decode(salt_b64)?;
-    let salted_pw   = pbkdf2_sha256(password.as_bytes(), &salt, iterations);
-    let client_key  = hmac_sha256(&salted_pw, b"Client Key");
-    let stored_key  = sha256_bytes(&client_key);
-    let server_key  = hmac_sha256(&salted_pw, b"Server Key");
+    let salted_pw = pbkdf2_sha256(password.as_bytes(), &salt, iterations);
+    let client_key = hmac_sha256(&salted_pw, b"Client Key");
+    let stored_key = sha256_bytes(&client_key);
+    let server_key = hmac_sha256(&salted_pw, b"Server Key");
 
-    let gs2_header       = b64_encode(b"n,,");
-    let cfm_no_proof     = format!("c={},r={}", gs2_header, full_nonce);
-    let auth_msg         = format!("{},{},{}", cfmb, sfm, cfm_no_proof);
+    let gs2_header = b64_encode(b"n,,");
+    let cfm_no_proof = format!("c={},r={}", gs2_header, full_nonce);
+    let auth_msg = format!("{},{},{}", cfmb, sfm, cfm_no_proof);
 
-    let client_sig       = hmac_sha256(&stored_key, auth_msg.as_bytes());
+    let client_sig = hmac_sha256(&stored_key, auth_msg.as_bytes());
     let mut client_proof = client_key;
-    for (p, &s) in client_proof.iter_mut().zip(client_sig.iter()) { *p ^= s; }
+    for (p, &s) in client_proof.iter_mut().zip(client_sig.iter()) {
+        *p ^= s;
+    }
 
     let server_sig = hmac_sha256(&server_key, auth_msg.as_bytes());
 
@@ -848,12 +999,17 @@ async fn scram_auth(
     }
     let final_method = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
     if final_method != AUTH_SASL_FINAL {
-        return Err(ProtocolError::AuthFailed(format!("expected 12, got {}", final_method)));
+        return Err(ProtocolError::AuthFailed(format!(
+            "expected 12, got {}",
+            final_method
+        )));
     }
     let sfinal = std::str::from_utf8(&payload[4..]).unwrap_or("");
     let expected = format!("v={}", b64_encode(&server_sig));
     if sfinal.trim_end_matches('\0') != expected {
-        return Err(ProtocolError::AuthFailed("SCRAM server signature mismatch".into()));
+        return Err(ProtocolError::AuthFailed(
+            "SCRAM server signature mismatch".into(),
+        ));
     }
 
     Ok(())

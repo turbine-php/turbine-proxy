@@ -50,10 +50,7 @@ pub enum AlertKind {
         hit_count: u64,
     },
     /// Static analysis flagged this fingerprint as a potential full table scan.
-    FullScanRisk {
-        reason: String,
-        call_count: u64,
-    },
+    FullScanRisk { reason: String, call_count: u64 },
 }
 
 /// A single regression alert.
@@ -77,17 +74,17 @@ struct FpBaseline {
 
 /// Shared regression alert store — cheap to clone (Arc-backed).
 pub struct RegressionStore {
-    alerts:   Mutex<Vec<RegressionAlert>>,
+    alerts: Mutex<Vec<RegressionAlert>>,
     baseline: Mutex<HashMap<u64, FpBaseline>>,
-    next_id:  AtomicU64,
+    next_id: AtomicU64,
 }
 
 impl RegressionStore {
     pub fn new() -> Self {
         Self {
-            alerts:   Mutex::new(Vec::new()),
+            alerts: Mutex::new(Vec::new()),
             baseline: Mutex::new(HashMap::new()),
-            next_id:  AtomicU64::new(1),
+            next_id: AtomicU64::new(1),
         }
     }
 
@@ -128,7 +125,7 @@ impl RegressionStore {
     pub fn check(&self, current: &[crate::analytics::collector::QueryStats]) {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let mut baseline = self.baseline.lock().unwrap();
-        let mut alerts   = self.alerts.lock().unwrap();
+        let mut alerts = self.alerts.lock().unwrap();
 
         // Collect active fingerprints for auto-resolve pass.
         let active_fps: std::collections::HashSet<&str> =
@@ -136,10 +133,11 @@ impl RegressionStore {
 
         // Auto-resolve latency-regression alerts whose fingerprint is gone.
         for a in alerts.iter_mut() {
-            if matches!(&a.details, AlertKind::LatencyRegression { .. }) && !a.resolved {
-                if !active_fps.contains(a.fingerprint.as_str()) {
-                    a.resolved = true;
-                }
+            if matches!(&a.details, AlertKind::LatencyRegression { .. })
+                && !a.resolved
+                && !active_fps.contains(a.fingerprint.as_str())
+            {
+                a.resolved = true;
             }
         }
 
@@ -175,7 +173,12 @@ impl RegressionStore {
 
             // ── Latency regression ────────────────────────────────────────────
             if stat.count < MIN_SAMPLES {
-                baseline.insert(stat.hash, FpBaseline { p95_us: stat.p95().as_micros() as u64 });
+                baseline.insert(
+                    stat.hash,
+                    FpBaseline {
+                        p95_us: stat.p95().as_micros() as u64,
+                    },
+                );
                 continue;
             }
 
@@ -231,7 +234,12 @@ impl RegressionStore {
                 }
             }
             // Slide the baseline forward so future checks compare against recent state.
-            baseline.insert(stat.hash, FpBaseline { p95_us: current_p95_us });
+            baseline.insert(
+                stat.hash,
+                FpBaseline {
+                    p95_us: current_p95_us,
+                },
+            );
         }
     }
 
@@ -270,7 +278,13 @@ impl RegressionStore {
             }
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        alerts.push(RegressionAlert { id, fingerprint: fingerprint.to_string(), details, detected_at_ms: now_ms, resolved: false });
+        alerts.push(RegressionAlert {
+            id,
+            fingerprint: fingerprint.to_string(),
+            details,
+            detected_at_ms: now_ms,
+            resolved: false,
+        });
     }
 }
 
@@ -283,7 +297,8 @@ fn full_scan_reason(fingerprint: &str) -> Option<&'static str> {
         && fp.contains(" from ")
         && !fp.contains("where")
         && !fp.contains("limit")
-        && !fp.contains("dual")   // SELECT 1 FROM DUAL etc.
+        && !fp.contains("dual")
+    // SELECT 1 FROM DUAL etc.
     {
         return Some("SELECT without WHERE or LIMIT — potential full table scan");
     }

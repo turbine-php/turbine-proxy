@@ -8,8 +8,8 @@ use std::fs;
 use std::io::BufReader;
 use std::sync::Arc;
 
-use tokio_rustls::rustls::{self, ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::{self, ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::config::{FrontendTlsConfig, TlsMode};
@@ -105,8 +105,8 @@ pub fn build_backend_connector(
                     .map_err(|e| anyhow::anyhow!("TLS CA '{}': {}", ca_path, e))?;
                 let mut reader = BufReader::new(ca_bytes.as_slice());
                 for cert in rustls_pemfile::certs(&mut reader) {
-                    let cert = cert
-                        .map_err(|e| anyhow::anyhow!("Invalid cert in '{}': {}", ca_path, e))?;
+                    let cert =
+                        cert.map_err(|e| anyhow::anyhow!("Invalid cert in '{}': {}", ca_path, e))?;
                     root_store
                         .add(cert)
                         .map_err(|e| anyhow::anyhow!("Malformed CA cert: {}", e))?;
@@ -133,10 +133,10 @@ pub fn build_frontend_acceptor(config: &FrontendTlsConfig) -> anyhow::Result<Tls
         anyhow::bail!("frontend_tls.cert and frontend_tls.key must both be set when frontend_tls.enabled = true");
     }
 
-    let cert_bytes = fs::read(&config.cert)
-        .map_err(|e| anyhow::anyhow!("TLS cert '{}': {}", config.cert, e))?;
-    let key_bytes = fs::read(&config.key)
-        .map_err(|e| anyhow::anyhow!("TLS key '{}': {}", config.key, e))?;
+    let cert_bytes =
+        fs::read(&config.cert).map_err(|e| anyhow::anyhow!("TLS cert '{}': {}", config.cert, e))?;
+    let key_bytes =
+        fs::read(&config.key).map_err(|e| anyhow::anyhow!("TLS key '{}': {}", config.key, e))?;
 
     let certs: Vec<CertificateDer<'static>> = {
         let mut r = BufReader::new(cert_bytes.as_slice());

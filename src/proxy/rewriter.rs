@@ -101,7 +101,10 @@ pub struct Rewriter {
 impl Rewriter {
     /// Compile all rules from configuration.  Returns an error if any regex
     /// fails to compile so that the proxy fails fast at startup.
-    pub fn new(configs: &[QueryRewriteConfig], config_path: impl Into<String>) -> anyhow::Result<Arc<Self>> {
+    pub fn new(
+        configs: &[QueryRewriteConfig],
+        config_path: impl Into<String>,
+    ) -> anyhow::Result<Arc<Self>> {
         let rules = compile_rules(configs)?;
         Ok(Arc::new(Self {
             inner: Arc::new(std::sync::RwLock::new(Arc::new(rules))),
@@ -125,20 +128,30 @@ impl Rewriter {
             let mut guard = self.inner.write().expect("rewriter lock poisoned");
             *guard = Arc::new(rules);
         }
-        log::info!("[rewriter] hot-reloaded {} rule(s) from {}", count, self.config_path);
+        log::info!(
+            "[rewriter] hot-reloaded {} rule(s) from {}",
+            count,
+            self.config_path
+        );
         Ok(())
     }
 
     /// Atomically replace the rule set from an in-memory slice.
     /// Used by the runtime config store (Fase 0.5) to apply UI changes immediately.
-    pub fn reload_from_slice(&self, configs: &[crate::config::QueryRewriteConfig]) -> anyhow::Result<()> {
+    pub fn reload_from_slice(
+        &self,
+        configs: &[crate::config::QueryRewriteConfig],
+    ) -> anyhow::Result<()> {
         let rules = compile_rules(configs)?;
         let count = rules.len();
         {
             let mut guard = self.inner.write().expect("rewriter lock poisoned");
             *guard = Arc::new(rules);
         }
-        log::info!("[rewriter] applied {} rule(s) from runtime config store", count);
+        log::info!(
+            "[rewriter] applied {} rule(s) from runtime config store",
+            count
+        );
         Ok(())
     }
 
@@ -172,7 +185,10 @@ impl Rewriter {
 
             // 2. Regex substitution.
             if let Some(ref replacement) = rule.replace_with {
-                result = rule.pattern.replace_all(&result, replacement.as_str()).into_owned();
+                result = rule
+                    .pattern
+                    .replace_all(&result, replacement.as_str())
+                    .into_owned();
             }
 
             // 3. MAX_EXECUTION_TIME hint injection (SELECT only).
@@ -238,7 +254,6 @@ fn compile_rules(configs: &[QueryRewriteConfig]) -> anyhow::Result<Vec<CompiledR
     Ok(rules)
 }
 
-
 // ─── Rewrite helpers ──────────────────────────────────────────────────────────
 
 /// Inject `/*+ MAX_EXECUTION_TIME(ms) */` after the `SELECT` keyword.
@@ -257,7 +272,8 @@ fn inject_timeout_hint(sql: &str, ms: u64) -> String {
     }
     let hint = format!("/*+ MAX_EXECUTION_TIME({}) */ ", ms);
     // Insert after "SELECT"
-    let select_end = trimmed.find(|c: char| c.is_ascii_whitespace() || c == '/')
+    let select_end = trimmed
+        .find(|c: char| c.is_ascii_whitespace() || c == '/')
         .unwrap_or(6)
         .max(6); // at least past "SELECT"
     let (before, after) = trimmed.split_at(select_end);
@@ -312,7 +328,10 @@ mod tests {
         let mut cfg = make_rule("(?i)DROP");
         cfg.block = true;
         let r = Rewriter::new(&[cfg], "").unwrap();
-        assert!(matches!(r.apply("DROP TABLE t"), RewriteOutcome::Blocked(_)));
+        assert!(matches!(
+            r.apply("DROP TABLE t"),
+            RewriteOutcome::Blocked(_)
+        ));
     }
 
     #[test]

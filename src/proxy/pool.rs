@@ -3,8 +3,8 @@
 //! works unchanged for MySQL, PostgreSQL, or any future protocol.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -62,7 +62,7 @@ pub struct ReplicaInfo {
 
 /// A backend connection together with the instant it was returned to the pool.
 struct PooledConn {
-    conn:       Box<dyn BackendConnection>,
+    conn: Box<dyn BackendConnection>,
     idle_since: Instant,
 }
 
@@ -126,7 +126,10 @@ impl ConnectionPool {
 
     /// Get a connection scoped to a specific backend database.
     /// Connections are only reused within the same database key.
-    pub async fn get_for_database(&self, database: Option<&str>) -> anyhow::Result<Box<dyn BackendConnection>> {
+    pub async fn get_for_database(
+        &self,
+        database: Option<&str>,
+    ) -> anyhow::Result<Box<dyn BackendConnection>> {
         let key = Self::db_key(database.or(self.config.database.as_deref()));
         let mut pools = self.connections.lock().await;
 
@@ -155,8 +158,13 @@ impl ConnectionPool {
 
         // Nothing usable — open a new TCP connection.
         let mut connect_cfg = self.config.clone();
-        connect_cfg.database = if key.is_empty() { None } else { Some(key.clone()) };
-        let mut conn = self.protocol
+        connect_cfg.database = if key.is_empty() {
+            None
+        } else {
+            Some(key.clone())
+        };
+        let mut conn = self
+            .protocol
             .connect_backend(&connect_cfg)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -175,7 +183,8 @@ impl ConnectionPool {
 
     /// Return a connection to the pool. Dropped if in-transaction or pool is full.
     pub async fn put(&self, conn: Box<dyn BackendConnection>) {
-        self.put_for_database(conn, self.config.database.as_deref()).await;
+        self.put_for_database(conn, self.config.database.as_deref())
+            .await;
     }
 
     /// Return a connection to a specific database bucket.
@@ -186,18 +195,29 @@ impl ConnectionPool {
         }
         let key = Self::db_key(database.or(self.config.database.as_deref()));
         let mut pools = self.connections.lock().await;
-        let bucket = pools.entry(key).or_insert_with(|| Vec::with_capacity(self.max_size));
+        let bucket = pools
+            .entry(key)
+            .or_insert_with(|| Vec::with_capacity(self.max_size));
         if bucket.len() < self.max_size {
-            bucket.push(PooledConn { conn, idle_since: Instant::now() });
+            bucket.push(PooledConn {
+                conn,
+                idle_since: Instant::now(),
+            });
         }
     }
 
     /// Snapshot: (idle, in-use, created, reused, evicted).
     pub async fn snapshot(&self) -> (usize, usize, usize, usize, usize) {
-        let idle    = self.connections.lock().await.values().map(|v| v.len()).sum();
-        let in_use  = self.borrowed.load(Ordering::Relaxed);
+        let idle = self
+            .connections
+            .lock()
+            .await
+            .values()
+            .map(|v| v.len())
+            .sum();
+        let in_use = self.borrowed.load(Ordering::Relaxed);
         let created = self.connections_created.load(Ordering::Relaxed);
-        let reused  = self.connections_reused.load(Ordering::Relaxed);
+        let reused = self.connections_reused.load(Ordering::Relaxed);
         let evicted = self.connections_evicted.load(Ordering::Relaxed);
         (idle, in_use, created, reused, evicted)
     }
@@ -230,7 +250,12 @@ impl BackendPool {
         protocol: Arc<dyn DatabaseProtocol>,
         max_idle: Option<Duration>,
     ) -> Self {
-        let primary = ConnectionPool::with_idle_timeout(primary_config, pool_size, protocol.clone(), max_idle);
+        let primary = ConnectionPool::with_idle_timeout(
+            primary_config,
+            pool_size,
+            protocol.clone(),
+            max_idle,
+        );
         let replicas = replica_configs
             .iter()
             .map(|c| ConnectionPool::with_idle_timeout(c, pool_size, protocol.clone(), max_idle))
@@ -356,8 +381,7 @@ impl BackendPool {
             .iter()
             .enumerate()
             .filter(|(i, r)| {
-                r.backup == backup_pass
-                    && self.replica_health[*i].healthy.load(Ordering::Relaxed)
+                r.backup == backup_pass && self.replica_health[*i].healthy.load(Ordering::Relaxed)
             })
             .map(|(i, r)| (i, r.weight.max(1)))
             .collect();
@@ -370,8 +394,8 @@ impl BackendPool {
         let total_weight: u32 = candidates.iter().map(|(_, w)| w).sum();
 
         // Use the global counter modulo total_weight for deterministic distribution.
-        let slot = (self.replica_index.fetch_add(1, Ordering::Relaxed) as u64
-            % total_weight as u64) as u32;
+        let slot = (self.replica_index.fetch_add(1, Ordering::Relaxed) as u64 % total_weight as u64)
+            as u32;
         let mut acc = 0u32;
         let mut chosen_idx = candidates[0].0; // fallback
         for (idx, w) in &candidates {
@@ -428,9 +452,7 @@ impl BackendPool {
             return Ok((self.get_primary_for_database(database).await?, usize::MAX));
         }
         let idx = hostgroup - 1;
-        if idx < self.replicas.len()
-            && self.replica_health[idx].healthy.load(Ordering::Relaxed)
-        {
+        if idx < self.replicas.len() && self.replica_health[idx].healthy.load(Ordering::Relaxed) {
             match self.replicas[idx].get_for_database(database).await {
                 Ok(conn) => return Ok((conn, idx)),
                 Err(e) => {
@@ -452,7 +474,11 @@ impl BackendPool {
         self.put_primary_for_database(conn, None).await;
     }
 
-    pub async fn put_primary_for_database(&self, conn: Box<dyn BackendConnection>, database: Option<&str>) {
+    pub async fn put_primary_for_database(
+        &self,
+        conn: Box<dyn BackendConnection>,
+        database: Option<&str>,
+    ) {
         let failover = self.failover_idx.load(Ordering::Relaxed);
         if failover >= 0 {
             let idx = failover as usize;
@@ -491,10 +517,10 @@ impl BackendPool {
         let mut replica_evicted = 0usize;
         for r in &self.replicas {
             let (i, u, c, rv, ev) = r.snapshot().await;
-            replica_idle    += i;
-            replica_in_use  += u;
+            replica_idle += i;
+            replica_in_use += u;
             replica_created += c;
-            replica_reused  += rv;
+            replica_reused += rv;
             replica_evicted += ev;
         }
         PoolStats {
@@ -527,7 +553,10 @@ impl BackendPool {
             backup: false,
             healthy: self.primary_health.healthy.load(Ordering::Relaxed),
             lag_ms: 0,
-            consecutive_failures: self.primary_health.consecutive_failures.load(Ordering::Relaxed),
+            consecutive_failures: self
+                .primary_health
+                .consecutive_failures
+                .load(Ordering::Relaxed),
             idle,
             in_use,
             created,
@@ -602,19 +631,19 @@ pub struct GrMember {
 /// Point-in-time snapshot of backend pool utilisation.
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct PoolStats {
-    pub primary_idle:     usize,
-    pub primary_in_use:   usize,
+    pub primary_idle: usize,
+    pub primary_in_use: usize,
     /// Total new backend TCP connections ever opened (primary).
-    pub primary_created:  usize,
+    pub primary_created: usize,
     /// Total pool cache hits (primary) — connections reused without TCP handshake.
-    pub primary_reused:   usize,
+    pub primary_reused: usize,
     /// Connections discarded because they exceeded max_idle (primary).
-    pub primary_evicted:  usize,
-    pub replica_idle:     usize,
-    pub replica_in_use:   usize,
-    pub replica_created:  usize,
-    pub replica_reused:   usize,
-    pub replica_evicted:  usize,
-    pub replica_count:    usize,
-    pub failover_active:  bool,
+    pub primary_evicted: usize,
+    pub replica_idle: usize,
+    pub replica_in_use: usize,
+    pub replica_created: usize,
+    pub replica_reused: usize,
+    pub replica_evicted: usize,
+    pub replica_count: usize,
+    pub failover_active: bool,
 }

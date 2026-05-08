@@ -8,8 +8,8 @@
 //! Routing priority in `BackendPool::get_primary()`:
 //!   GR primary (gr_primary_idx) > HA failover (failover_idx) > configured primary
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::BackendConfig;
@@ -20,20 +20,20 @@ use crate::proxy::pool::{BackendPool, GrMember};
 
 /// Background task that polls the GR cluster state and updates `BackendPool`.
 pub struct GrChecker {
-    pool:           Arc<BackendPool>,
-    protocol:       Arc<dyn DatabaseProtocol>,
+    pool: Arc<BackendPool>,
+    protocol: Arc<dyn DatabaseProtocol>,
     primary_config: BackendConfig,
     replica_configs: Vec<BackendConfig>,
-    interval:       Duration,
+    interval: Duration,
 }
 
 impl GrChecker {
     pub fn new(
-        pool:            Arc<BackendPool>,
-        protocol:        Arc<dyn DatabaseProtocol>,
-        primary_config:  BackendConfig,
+        pool: Arc<BackendPool>,
+        protocol: Arc<dyn DatabaseProtocol>,
+        primary_config: BackendConfig,
         replica_configs: Vec<BackendConfig>,
-        interval_secs:   u64,
+        interval_secs: u64,
     ) -> Self {
         Self {
             pool,
@@ -164,10 +164,10 @@ fn parse_gr_members(bytes: &[u8]) -> Vec<GrMember> {
 
     rows.into_iter()
         .map(|row| {
-            let host    = str_col(&row, 0);
-            let port    = str_col(&row, 1);
-            let role    = str_col(&row, 2);
-            let state   = str_col(&row, 3);
+            let host = str_col(&row, 0);
+            let port = str_col(&row, 1);
+            let role = str_col(&row, 2);
+            let state = str_col(&row, 3);
             let version = str_col(&row, 4);
             GrMember {
                 addr: if port.is_empty() || port == "3306" {
@@ -184,7 +184,10 @@ fn parse_gr_members(bytes: &[u8]) -> Vec<GrMember> {
 }
 
 fn str_col(row: &[Option<String>], idx: usize) -> String {
-    row.get(idx).and_then(|v| v.as_deref()).unwrap_or("").to_string()
+    row.get(idx)
+        .and_then(|v| v.as_deref())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Parse a MySQL text-protocol result set into rows × columns of `Option<String>`.
@@ -218,7 +221,7 @@ fn parse_text_rows(bytes: &[u8]) -> Option<Vec<Vec<Option<String>>>> {
         let mut row = Vec::with_capacity(col_count);
         for _ in 0..col_count {
             match read_lenenc_str(pkt, &mut rp)? {
-                None    => row.push(None),
+                None => row.push(None),
                 Some(v) => row.push(Some(String::from_utf8_lossy(v).into_owned())),
             }
         }
@@ -230,12 +233,16 @@ fn parse_text_rows(bytes: &[u8]) -> Option<Vec<Vec<Option<String>>>> {
 // ─── Low-level MySQL packet helpers ──────────────────────────────────────────
 
 fn next_packet<'a>(bytes: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
-    if *pos + 4 > bytes.len() { return None; }
+    if *pos + 4 > bytes.len() {
+        return None;
+    }
     let len = (bytes[*pos] as usize)
         | ((bytes[*pos + 1] as usize) << 8)
         | ((bytes[*pos + 2] as usize) << 16);
     *pos += 4;
-    if *pos + len > bytes.len() { return None; }
+    if *pos + len > bytes.len() {
+        return None;
+    }
     let payload = &bytes[*pos..*pos + len];
     *pos += len;
     Some(payload)
@@ -265,7 +272,10 @@ fn read_lenenc_int(bytes: &[u8], pos: &mut usize) -> Option<usize> {
 
 fn read_lenenc_str<'a>(bytes: &'a [u8], pos: &mut usize) -> Option<Option<&'a [u8]>> {
     let b = *bytes.get(*pos)?;
-    if b == 0xFB { *pos += 1; return Some(None); }
+    if b == 0xFB {
+        *pos += 1;
+        return Some(None);
+    }
     let len = read_lenenc_int(bytes, pos)?;
     let s = bytes.get(*pos..*pos + len)?;
     *pos += len;

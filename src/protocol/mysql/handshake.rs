@@ -2,8 +2,8 @@
 
 use bytes::{BufMut, BytesMut};
 
-use crate::protocol::error::Result;
 use crate::protocol::error::ProtocolError;
+use crate::protocol::error::Result;
 
 pub mod capability {
     pub const LONG_PASSWORD: u32 = 1 << 0;
@@ -173,11 +173,7 @@ fn read_null_terminated_string(buf: &mut &[u8]) -> Result<String> {
     let null_pos = buf
         .iter()
         .position(|&b| b == 0)
-        .ok_or_else(|| {
-            ProtocolError::InvalidFormat(
-                "Missing null terminator in string".into(),
-            )
-        })?;
+        .ok_or_else(|| ProtocolError::InvalidFormat("Missing null terminator in string".into()))?;
 
     let s = String::from_utf8_lossy(&buf[..null_pos]).into_owned();
     *buf = &buf[null_pos + 1..];
@@ -188,28 +184,35 @@ fn read_null_terminated_string(buf: &mut &[u8]) -> Result<String> {
 /// Returns `None` if the buffer is empty or malformed.
 fn read_lenenc_int(buf: &mut &[u8]) -> Option<usize> {
     use bytes::Buf;
-    if buf.is_empty() { return None; }
+    if buf.is_empty() {
+        return None;
+    }
     let first = buf[0];
     *buf = &buf[1..];
     match first {
         0xfb => None, // NULL
         0xfc => {
-            if buf.len() < 2 { return None; }
+            if buf.len() < 2 {
+                return None;
+            }
             let v = u16::from_le_bytes([buf[0], buf[1]]) as usize;
             *buf = &buf[2..];
             Some(v)
         }
         0xfd => {
-            if buf.len() < 3 { return None; }
+            if buf.len() < 3 {
+                return None;
+            }
             let v = u32::from_le_bytes([buf[0], buf[1], buf[2], 0]) as usize;
             *buf = &buf[3..];
             Some(v)
         }
         0xfe => {
-            if buf.len() < 8 { return None; }
+            if buf.len() < 8 {
+                return None;
+            }
             let v = u64::from_le_bytes([
-                buf[0], buf[1], buf[2], buf[3],
-                buf[4], buf[5], buf[6], buf[7],
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
             ]) as usize;
             *buf = &buf[8..];
             Some(v)
@@ -224,17 +227,23 @@ fn parse_app_name_from_attrs(buf: &[u8]) -> Option<String> {
     let mut remaining = buf;
     // First byte(s): total byte length of the attributes block (lenenc int).
     let total_len = read_lenenc_int(&mut remaining)?;
-    if remaining.len() < total_len { return None; }
+    if remaining.len() < total_len {
+        return None;
+    }
     let mut attrs = &remaining[..total_len];
 
     while !attrs.is_empty() {
         let key_len = read_lenenc_int(&mut attrs)?;
-        if attrs.len() < key_len { break; }
+        if attrs.len() < key_len {
+            break;
+        }
         let key = std::str::from_utf8(&attrs[..key_len]).unwrap_or("");
         attrs = &attrs[key_len..];
 
         let val_len = read_lenenc_int(&mut attrs)?;
-        if attrs.len() < val_len { break; }
+        if attrs.len() < val_len {
+            break;
+        }
         let val = std::str::from_utf8(&attrs[..val_len]).unwrap_or("");
         attrs = &attrs[val_len..];
 

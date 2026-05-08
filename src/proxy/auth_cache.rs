@@ -37,9 +37,9 @@ pub struct UserRules {
 // ─── CachedEntry ─────────────────────────────────────────────────────────────
 
 struct CachedEntry {
-    stage2:  Stage2Hash,
-    sha256:  Sha256Hash,
-    rules:   UserRules,
+    stage2: Stage2Hash,
+    sha256: Sha256Hash,
+    rules: UserRules,
     expires: Instant,
 }
 
@@ -49,7 +49,7 @@ struct CachedEntry {
 pub struct AuthCache {
     entries: Arc<RwLock<HashMap<String, CachedEntry>>>,
     /// True when no users are configured — open mode, no verification.
-    open:    bool,
+    open: bool,
 }
 
 impl AuthCache {
@@ -62,15 +62,18 @@ impl AuthCache {
 
         let mut map = HashMap::with_capacity(users.len());
         for u in users {
-            map.insert(u.name.clone(), CachedEntry {
-                stage2:  stage2_hash(&u.password),
-                sha256:  sha256_stage2(&u.password),
-                rules:   UserRules {
-                    allow_writes:    u.allow_writes,
-                    max_connections: u.max_connections,
+            map.insert(
+                u.name.clone(),
+                CachedEntry {
+                    stage2: stage2_hash(&u.password),
+                    sha256: sha256_stage2(&u.password),
+                    rules: UserRules {
+                        allow_writes: u.allow_writes,
+                        max_connections: u.max_connections,
+                    },
+                    expires,
                 },
-                expires,
-            });
+            );
         }
 
         Self {
@@ -90,7 +93,10 @@ impl AuthCache {
         token: &[u8],
     ) -> Option<UserRules> {
         if self.open {
-            return Some(UserRules { allow_writes: true, max_connections: 0 });
+            return Some(UserRules {
+                allow_writes: true,
+                max_connections: 0,
+            });
         }
 
         let entries = self.entries.read().await;
@@ -114,7 +120,10 @@ impl AuthCache {
         let valid = crate::protocol::mysql::auth::verify(challenge, token, &entry.stage2)
             || crate::protocol::mysql::auth::verify_sha256(challenge, token, &entry.sha256);
 
-        if valid { Some(entry.rules.clone()) } else { None }
+        if valid {
+            Some(entry.rules.clone())
+        } else {
+            None
+        }
     }
-
 }

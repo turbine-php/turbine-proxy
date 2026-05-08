@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
@@ -165,10 +165,18 @@ impl ConfigStore {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute_batch(SCHEMA)?;
         // Forward-compatible migration for older DBs created before `protocol`.
-        if conn.execute("ALTER TABLE config_backends ADD COLUMN protocol TEXT NOT NULL DEFAULT 'mysql'", []).is_ok() {
+        if conn
+            .execute(
+                "ALTER TABLE config_backends ADD COLUMN protocol TEXT NOT NULL DEFAULT 'mysql'",
+                [],
+            )
+            .is_ok()
+        {
             log::info!("[config-store] migrated config_backends: added protocol column");
         }
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     // ── Seeding ───────────────────────────────────────────────────────────────
@@ -217,7 +225,9 @@ impl ConfigStore {
         }
 
         let rr_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM config_rewrite_rules", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM config_rewrite_rules", [], |r| {
+                r.get(0)
+            })?;
         if rr_count == 0 {
             for (i, r) in rewrite_rules.iter().enumerate() {
                 conn.execute(
@@ -249,15 +259,19 @@ impl ConfigStore {
             }
         }
 
-        let u_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM config_users", [], |r| r.get(0))?;
+        let u_count: i64 = conn.query_row("SELECT COUNT(*) FROM config_users", [], |r| r.get(0))?;
         if u_count == 0 {
             for u in users {
                 conn.execute(
                     "INSERT OR IGNORE INTO config_users
                      (name, password, allow_writes, max_connections)
                      VALUES (?1,?2,?3,?4)",
-                    params![u.name, u.password, u.allow_writes as i64, u.max_connections as i64],
+                    params![
+                        u.name,
+                        u.password,
+                        u.allow_writes as i64,
+                        u.max_connections as i64
+                    ],
                 )?;
             }
         }
@@ -292,7 +306,8 @@ impl ConfigStore {
                 enabled: r.get::<_, i64>(12)? != 0,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn create_rule(&self, row: &RuleRow, author_ip: &str) -> Result<i64> {
@@ -362,7 +377,10 @@ impl ConfigStore {
             "rule",
             Some(id),
             "update",
-            before.as_ref().map(|r| serde_json::to_string(r).unwrap_or_default()).as_deref(),
+            before
+                .as_ref()
+                .map(|r| serde_json::to_string(r).unwrap_or_default())
+                .as_deref(),
             Some(&serde_json::to_string(row)?),
             author_ip,
         )?;
@@ -378,7 +396,10 @@ impl ConfigStore {
             "rule",
             Some(id),
             "delete",
-            before.as_ref().map(|r| serde_json::to_string(r).unwrap_or_default()).as_deref(),
+            before
+                .as_ref()
+                .map(|r| serde_json::to_string(r).unwrap_or_default())
+                .as_deref(),
             None,
             author_ip,
         )?;
@@ -435,7 +456,8 @@ impl ConfigStore {
                 enabled: r.get::<_, i64>(8)? != 0,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn create_rewrite_rule(&self, row: &RewriteRuleRow, author_ip: &str) -> Result<i64> {
@@ -468,7 +490,12 @@ impl ConfigStore {
         Ok(id)
     }
 
-    pub fn update_rewrite_rule(&self, id: i64, row: &RewriteRuleRow, author_ip: &str) -> Result<()> {
+    pub fn update_rewrite_rule(
+        &self,
+        id: i64,
+        row: &RewriteRuleRow,
+        author_ip: &str,
+    ) -> Result<()> {
         let before = self.get_rewrite_rule(id)?;
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -493,7 +520,10 @@ impl ConfigStore {
             "rewrite_rule",
             Some(id),
             "update",
-            before.as_ref().map(|r| serde_json::to_string(r).unwrap_or_default()).as_deref(),
+            before
+                .as_ref()
+                .map(|r| serde_json::to_string(r).unwrap_or_default())
+                .as_deref(),
             Some(&serde_json::to_string(row)?),
             author_ip,
         )?;
@@ -509,7 +539,10 @@ impl ConfigStore {
             "rewrite_rule",
             Some(id),
             "delete",
-            before.as_ref().map(|r| serde_json::to_string(r).unwrap_or_default()).as_deref(),
+            before
+                .as_ref()
+                .map(|r| serde_json::to_string(r).unwrap_or_default())
+                .as_deref(),
             None,
             author_ip,
         )?;
@@ -567,14 +600,20 @@ impl ConfigStore {
                 enabled: r.get::<_, i64>(9)? != 0,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn create_backend(&self, row: &BackendRow, author_ip: &str) -> Result<i64> {
         self.create_backend_with_protocol(row, author_ip, "mysql")
     }
 
-    pub fn create_backend_with_protocol(&self, row: &BackendRow, author_ip: &str, protocol: &str) -> Result<i64> {
+    pub fn create_backend_with_protocol(
+        &self,
+        row: &BackendRow,
+        author_ip: &str,
+        protocol: &str,
+    ) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO config_backends
@@ -612,7 +651,13 @@ impl ConfigStore {
         self.update_backend_with_protocol(id, row, author_ip, "mysql")
     }
 
-    pub fn update_backend_with_protocol(&self, id: i64, row: &BackendRow, author_ip: &str, protocol: &str) -> Result<()> {
+    pub fn update_backend_with_protocol(
+        &self,
+        id: i64,
+        row: &BackendRow,
+        author_ip: &str,
+        protocol: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE config_backends SET
@@ -650,9 +695,17 @@ impl ConfigStore {
         self.delete_backend_with_protocol(id, author_ip, "mysql")
     }
 
-    pub fn delete_backend_with_protocol(&self, id: i64, author_ip: &str, protocol: &str) -> Result<()> {
+    pub fn delete_backend_with_protocol(
+        &self,
+        id: i64,
+        author_ip: &str,
+        protocol: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM config_backends WHERE id=?1 AND protocol=?2", params![id, protocol])?;
+        conn.execute(
+            "DELETE FROM config_backends WHERE id=?1 AND protocol=?2",
+            params![id, protocol],
+        )?;
         Self::log_change_inner(&conn, "backend", Some(id), "delete", None, None, author_ip)?;
         Ok(())
     }
@@ -675,7 +728,8 @@ impl ConfigStore {
                 enabled: r.get::<_, i64>(5)? != 0,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     pub fn create_user(&self, row: &UserRow, author_ip: &str) -> Result<i64> {
@@ -694,7 +748,13 @@ impl ConfigStore {
         let id = conn.last_insert_rowid();
         let safe = serde_json::json!({ "name": row.name, "allow_writes": row.allow_writes });
         Self::log_change_inner(
-            &conn, "user", Some(id), "create", None, Some(&safe.to_string()), author_ip,
+            &conn,
+            "user",
+            Some(id),
+            "create",
+            None,
+            Some(&safe.to_string()),
+            author_ip,
         )?;
         Ok(id)
     }
@@ -716,7 +776,13 @@ impl ConfigStore {
         )?;
         let safe = serde_json::json!({ "name": row.name, "allow_writes": row.allow_writes, "enabled": row.enabled });
         Self::log_change_inner(
-            &conn, "user", Some(id), "update", None, Some(&safe.to_string()), author_ip,
+            &conn,
+            "user",
+            Some(id),
+            "update",
+            None,
+            Some(&safe.to_string()),
+            author_ip,
         )?;
         Ok(())
     }
@@ -748,7 +814,8 @@ impl ConfigStore {
                 author_ip: r.get(7)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 
     // ── Conversion to config types (for hot-reload) ───────────────────────────
@@ -800,7 +867,10 @@ impl ConfigStore {
         self.active_backends_for_protocol("mysql")
     }
 
-    pub fn active_backends_for_protocol(&self, protocol: &str) -> Result<(Option<BackendConfig>, Vec<BackendConfig>)> {
+    pub fn active_backends_for_protocol(
+        &self,
+        protocol: &str,
+    ) -> Result<(Option<BackendConfig>, Vec<BackendConfig>)> {
         let rows = self.list_backends_by_protocol(protocol)?;
         let mut primary = None;
         let mut replicas = Vec::new();
@@ -852,7 +922,12 @@ impl ConfigStore {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    fn insert_backend_inner(conn: &Connection, cfg: &BackendConfig, role: &str, protocol: &str) -> Result<()> {
+    fn insert_backend_inner(
+        conn: &Connection,
+        cfg: &BackendConfig,
+        role: &str,
+        protocol: &str,
+    ) -> Result<()> {
         let tls = match cfg.tls_mode {
             TlsMode::Off => "off",
             TlsMode::Required => "required",
@@ -889,7 +964,14 @@ impl ConfigStore {
         conn.execute(
             "INSERT INTO config_changes (entity,entity_id,action,before_json,after_json,author_ip)
              VALUES (?1,?2,?3,?4,?5,?6)",
-            params![entity, entity_id, action, before_json, after_json, author_ip],
+            params![
+                entity,
+                entity_id,
+                action,
+                before_json,
+                after_json,
+                author_ip
+            ],
         )?;
         Ok(())
     }
@@ -910,12 +992,14 @@ impl ConfigStore {
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
 
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             DELETE FROM config_rules;
             DELETE FROM config_rewrite_rules;
             DELETE FROM config_backends WHERE protocol='mysql';
             DELETE FROM config_users;
-        ")?;
+        ",
+        )?;
 
         for (i, r) in rules.iter().enumerate() {
             let dest = match r.destination {
@@ -981,12 +1065,17 @@ impl ConfigStore {
         }
 
         Self::log_change_inner(
-            &conn, "all", None, "import",
+            &conn,
+            "all",
+            None,
+            "import",
             None,
             Some(&format!(
                 r#"{{"rules":{},"rewrite_rules":{},"backends":{},"users":{}}}"#,
-                rules.len(), rewrite_rules.len(),
-                1 + replicas.len(), users.len()
+                rules.len(),
+                rewrite_rules.len(),
+                1 + replicas.len(),
+                users.len()
             )),
             author_ip,
         )?;

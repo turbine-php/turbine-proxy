@@ -13,11 +13,11 @@ use tokio::sync::RwLock;
 #[derive(Clone, serde::Serialize)]
 pub struct UserStats {
     pub connections_active: usize,
-    pub connections_total:  usize,
-    pub queries_total:      usize,
+    pub connections_total: usize,
+    pub queries_total: usize,
     /// RFC 3339 string of last connection time.
-    pub last_seen:          Option<String>,
-    pub allow_writes:       bool,
+    pub last_seen: Option<String>,
+    pub allow_writes: bool,
 }
 
 // ─── UserRegistry ─────────────────────────────────────────────────────────────
@@ -28,15 +28,17 @@ pub struct UserRegistry {
 
 struct MutableStats {
     connections_active: usize,
-    connections_total:  usize,
-    queries_total:      usize,
-    last_seen:          Option<SystemTime>,
-    allow_writes:       bool,
+    connections_total: usize,
+    queries_total: usize,
+    last_seen: Option<SystemTime>,
+    allow_writes: bool,
 }
 
 impl UserRegistry {
     pub fn new() -> Self {
-        Self { inner: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     /// Record a new connection for `user`.
@@ -50,7 +52,7 @@ impl UserRegistry {
             allow_writes,
         });
         e.connections_active += 1;
-        e.connections_total  += 1;
+        e.connections_total += 1;
         e.last_seen = Some(SystemTime::now());
         e.allow_writes = allow_writes;
     }
@@ -87,17 +89,19 @@ impl UserRegistry {
                     t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| {
                         // Format as ISO 8601 manually — no chrono dependency needed.
                         let secs = d.as_secs();
-                        let dt = fmt_epoch(secs);
-                        dt
+                        fmt_epoch(secs)
                     })
                 });
-                (name.clone(), UserStats {
-                    connections_active: e.connections_active,
-                    connections_total:  e.connections_total,
-                    queries_total:      e.queries_total,
-                    last_seen,
-                    allow_writes:       e.allow_writes,
-                })
+                (
+                    name.clone(),
+                    UserStats {
+                        connections_active: e.connections_active,
+                        connections_total: e.connections_total,
+                        queries_total: e.queries_total,
+                        last_seen,
+                        allow_writes: e.allow_writes,
+                    },
+                )
             })
             .collect()
     }
@@ -108,7 +112,7 @@ impl UserRegistry {
 /// Minimal epoch → RFC 3339 formatter that avoids pulling in chrono.
 fn fmt_epoch(secs: u64) -> String {
     // Days since Unix epoch
-    let days  = secs / 86400;
+    let days = secs / 86400;
     let day_s = secs % 86400;
     let h = day_s / 3600;
     let m = (day_s % 3600) / 60;
@@ -124,15 +128,32 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     let mut y = 1970u64;
     loop {
         let in_year = if is_leap(y) { 366 } else { 365 };
-        if days < in_year { break; }
+        if days < in_year {
+            break;
+        }
         days -= in_year;
         y += 1;
     }
     let leap = is_leap(y);
-    let months = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let months = [
+        31u64,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 1u64;
     for &mdays in &months {
-        if days < mdays { break; }
+        if days < mdays {
+            break;
+        }
         days -= mdays;
         mo += 1;
     }
@@ -140,5 +161,5 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap(y: u64) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }

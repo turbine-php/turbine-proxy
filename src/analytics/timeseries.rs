@@ -8,7 +8,7 @@
 //! - Every 60 s: `take_snapshot` → `record_minute`
 //! - Every 1 h:  `rollup_hourly`  (1 min → 1 h, idempotent)
 //! - Every 24 h: `rollup_daily` + `prune` (1 h → 1 d; delete rows older than
-//!               `retention_days`)
+//!   `retention_days`)
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -21,29 +21,29 @@ use rusqlite::{params, Connection};
 /// Lock-free throughput accumulators. Shared between `handle_connection` tasks
 /// and the background time-series task via `Arc<ThroughputCounters>`.
 pub struct ThroughputCounters {
-    queries:           AtomicU64,
-    slow:              AtomicU64,
-    total_us:          AtomicU64,
-    max_us:            AtomicU64,
+    queries: AtomicU64,
+    slow: AtomicU64,
+    total_us: AtomicU64,
+    max_us: AtomicU64,
     slow_threshold_us: u64,
 }
 
 /// Point-in-time drain produced by [`ThroughputCounters::take_snapshot`].
 /// All accumulators are reset to zero atomically (swap).
 pub struct MinuteSnapshot {
-    pub queries:  u64,
-    pub slow:     u64,
+    pub queries: u64,
+    pub slow: u64,
     pub total_us: u64,
-    pub max_us:   u64,
+    pub max_us: u64,
 }
 
 impl ThroughputCounters {
     pub fn new(slow_threshold_ms: u64) -> Self {
         Self {
-            queries:           AtomicU64::new(0),
-            slow:              AtomicU64::new(0),
-            total_us:          AtomicU64::new(0),
-            max_us:            AtomicU64::new(0),
+            queries: AtomicU64::new(0),
+            slow: AtomicU64::new(0),
+            total_us: AtomicU64::new(0),
+            max_us: AtomicU64::new(0),
             slow_threshold_us: slow_threshold_ms.saturating_mul(1_000),
         }
     }
@@ -63,10 +63,10 @@ impl ThroughputCounters {
     /// The tiny race on `max_us` between reads is acceptable for time-series data.
     pub fn take_snapshot(&self) -> MinuteSnapshot {
         MinuteSnapshot {
-            queries:  self.queries.swap(0, Ordering::Relaxed),
-            slow:     self.slow.swap(0, Ordering::Relaxed),
+            queries: self.queries.swap(0, Ordering::Relaxed),
+            slow: self.slow.swap(0, Ordering::Relaxed),
             total_us: self.total_us.swap(0, Ordering::Relaxed),
-            max_us:   self.max_us.swap(0, Ordering::Relaxed),
+            max_us: self.max_us.swap(0, Ordering::Relaxed),
         }
     }
 }
@@ -95,11 +95,11 @@ pub struct TimeseriesStore {
 /// A single time-series data point returned by [`TimeseriesStore::query`].
 #[derive(serde::Serialize)]
 pub struct TsPoint {
-    pub bucket_unix:  i64,
-    pub queries:      i64,
+    pub bucket_unix: i64,
+    pub queries: i64,
     pub slow_queries: i64,
-    pub avg_us:       f64,
-    pub max_us:       i64,
+    pub avg_us: f64,
+    pub max_us: i64,
 }
 
 impl TimeseriesStore {
@@ -107,7 +107,9 @@ impl TimeseriesStore {
         let conn = Connection::open(db_path)
             .with_context(|| format!("Opening timeseries DB at '{db_path}'"))?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Upsert a 1-minute bucket. Safe to call multiple times for the same
@@ -125,10 +127,10 @@ impl TimeseriesStore {
                  max_us       = MAX(max_us,    excluded.max_us)",
             params![
                 bucket_unix,
-                snap.queries  as i64,
-                snap.slow     as i64,
+                snap.queries as i64,
+                snap.slow as i64,
                 snap.total_us as i64,
-                snap.max_us   as i64,
+                snap.max_us as i64,
             ],
         )?;
         Ok(())
@@ -200,14 +202,18 @@ impl TimeseriesStore {
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![resolution, limit as i64], |row| {
-            let queries: i64  = row.get(1)?;
+            let queries: i64 = row.get(1)?;
             let total_us: i64 = row.get(3)?;
             Ok(TsPoint {
-                bucket_unix:  row.get(0)?,
+                bucket_unix: row.get(0)?,
                 queries,
                 slow_queries: row.get(2)?,
-                avg_us: if queries > 0 { total_us as f64 / queries as f64 } else { 0.0 },
-                max_us:       row.get(4)?,
+                avg_us: if queries > 0 {
+                    total_us as f64 / queries as f64
+                } else {
+                    0.0
+                },
+                max_us: row.get(4)?,
             })
         })?;
         let mut pts: Vec<TsPoint> = rows.collect::<rusqlite::Result<_>>()?;
@@ -237,14 +243,18 @@ impl TimeseriesStore {
         let rows = stmt.query_map(
             params![resolution, from_unix, to_unix, limit as i64],
             |row| {
-                let queries: i64  = row.get(1)?;
+                let queries: i64 = row.get(1)?;
                 let total_us: i64 = row.get(3)?;
                 Ok(TsPoint {
-                    bucket_unix:  row.get(0)?,
+                    bucket_unix: row.get(0)?,
                     queries,
                     slow_queries: row.get(2)?,
-                    avg_us: if queries > 0 { total_us as f64 / queries as f64 } else { 0.0 },
-                    max_us:       row.get(4)?,
+                    avg_us: if queries > 0 {
+                        total_us as f64 / queries as f64
+                    } else {
+                        0.0
+                    },
+                    max_us: row.get(4)?,
                 })
             },
         )?;
