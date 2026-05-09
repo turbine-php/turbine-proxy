@@ -91,7 +91,7 @@ assets = [
   # Binary
   ["target/release/turbineproxy", "usr/bin/", "755"],
   # Dashboard assets
-  ["dashboard/dist/", "usr/share/turbineproxy/dashboard/dist/", "644"],
+  ["dashboard/dist/**/*", "usr/share/turbineproxy/dashboard/dist/", "644"],
   # Example config
   ["turbineproxy.example.toml", "etc/turbineproxy/turbineproxy.example.toml", "644"],
   # systemd unit
