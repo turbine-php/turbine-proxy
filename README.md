@@ -51,7 +51,7 @@ Client ──TLS──▶ TurbineProxy ──TLS──▶ Primary  (writes + tra
 | **Compression** | zlib (MySQL 5.7+), zstd (MySQL 8.0.18+) on backend connections |
 | **Performance** | Global & per-rule fast-forward mode (zero-overhead passthrough), per-rule QPS rate limiting (token bucket), result cache with TTL, query rewriting (LIMIT injection, timeout hints) |
 | **TLS** | Frontend TLS (client → proxy), backend TLS (proxy → DB), verify-identity for RDS/Cloud SQL, NSS Key Log for debugging |
-| **Security** | SQL injection protection (UNION, stacked queries, SLEEP, BENCHMARK, INTO OUTFILE, xp_cmdshell, hex evasion…), per-user rules, read-only enforcement, query allowlist, append-only audit log |
+| **Security** | SQL injection protection (UNION, stacked queries, SLEEP, BENCHMARK, INTO OUTFILE, xp_cmdshell, hex evasion…), per-user rules, read-only enforcement, query allowlist, append-only audit log, **AES-256-GCM at-rest encryption** for stored passwords, external secret references (`env:` / `file:`) |
 | **HA** | Health checks, lag monitoring, automatic failover, Group Replication / InnoDB Cluster awareness, Galera check, PROXY Protocol v2 (HAProxy, AWS NLB), multi-node cluster config sync |
 | **Observability** | Prometheus metrics (11 metric families + histograms), Grafana dashboard JSON, query heatmap, N+1 detector, index advisor, slow query log, per-query tracer |
 | **Operations** | Per-port `server_version` string, zero-downtime reload (SIGHUP / dashboard), dry-run query rules, Helm chart, Docker (distroless), AUR / deb / Homebrew packages, systemd unit, logrotate config |
@@ -237,6 +237,31 @@ ssl_keylog_file = "/tmp/sslkeys.log"   # debug only
 - Passwords in `turbineproxy.toml` are never logged.
 - Dashboard credentials are separate from database credentials.
 - SHA-1 and SHA-256 auth tokens are pre-computed at startup and cached (`auth_cache_ttl_secs`). Plaintext passwords are not held in memory after the cache is warm.
+
+#### External Secret References
+
+Avoid putting plaintext passwords in config files by using a reference scheme:
+
+```toml
+# Read from environment variable (Docker secrets, Kubernetes envFrom, etc.)
+password = "env:DB_PASSWORD"
+
+# Read from a file (Docker secret mount, Vault agent, etc.)
+password = "file:/run/secrets/db_pw"
+```
+
+#### AES-256-GCM At-Rest Encryption
+
+Passwords entered via the dashboard are stored in SQLite. Set `TURBINEPROXY_SECRET_KEY` to a 64-character hex key (256-bit) to encrypt them at rest:
+
+```bash
+# Generate a key
+export TURBINEPROXY_SECRET_KEY=$(openssl rand -hex 32)
+```
+
+Encrypted values are stored as `enc:<base64url(nonce || ciphertext)>` and are transparently decrypted at runtime. Existing plaintext values and `env:`/`file:` references continue to work without any migration.
+
+See [Secret Management](https://docs.turbineproxy.com/docs/features/secret-management) for the full guide.
 
 ### Responsible Disclosure
 

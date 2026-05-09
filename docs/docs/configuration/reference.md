@@ -61,7 +61,7 @@ resolution_family = "system"
 |-----|------|---------|-------------|
 | `addr` | string | — | Backend address as `host:port` |
 | `user` | string | — | Database user for backend connections |
-| `password` | string | `""` | Database password (stored in memory only, never logged) |
+| `password` | string | `""` | Database password. Supports `env:VAR`, `file:/path`, or a literal. Literal values are encrypted with AES-256-GCM when `TURBINEPROXY_SECRET_KEY` is set. See [Secret Management](../features/secret-management.md). |
 | `database` | string | `""` | Default database to select on connect |
 | `tls_mode` | string | `"off"` | Backend TLS: `off`, `required`, `verify-ca`, `verify-identity` |
 | `tls_ca` | string | `""` | Path to CA certificate file |
@@ -115,7 +115,7 @@ transaction_isolation  = ""
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | — | Database username |
-| `password` | string | — | Plaintext password. Hashed in memory, never logged or stored |
+| `password` | string | — | Password. Supports `env:VAR`, `file:/path`, or a literal. Hashed in memory, never logged. See [Secret Management](../features/secret-management.md). |
 | `allow_writes` | bool | `true` | If `false`, only `SELECT`, `SHOW`, `EXPLAIN` are permitted |
 | `max_connections` | int | `0` | Per-user connection limit. `0` = unlimited |
 | `default_schema` | string | `""` | Automatically issue `USE <schema>` on connect |

@@ -11,6 +11,15 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Features
 
+- **AES-256-GCM at-rest encryption for stored passwords** — Passwords saved through the
+  dashboard are encrypted before being written to SQLite when `TURBINEPROXY_SECRET_KEY`
+  (64-char hex) is set. On-disk format: `enc:<base64url(nonce || ciphertext)>`. Existing
+  plaintext values and `env:`/`file:` references continue to work without migration.
+
+- **External secret references (`env:` / `file:`)** — Any `password` field in TOML or
+  SQLite now accepts `env:VAR` (reads environment variable) or `file:/path` (reads file,
+  trims whitespace) in addition to literal values. The actual secret never touches SQLite.
+
 - **`server_version` per listener** — Configure the version string sent to clients in the
   initial handshake independently per port. `[mysql]` defaults to `"8.0.36-TurbineProxy"`;
   `[pgsql]` defaults to `"16.0"`. Useful when migrating to/from Aurora, Cloud SQL, or
