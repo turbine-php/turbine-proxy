@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.3.1] - 2026-05-09
+
+### Fixed
+
+- **Dockerfile**: bump base image from `rust:1.82` to `rust:1.85` so Cargo
+  supports `edition2024`, required transitively by `digest 0.11` / `ctutils 0.4.2`.
+- **`.deb` packaging**: remove hardcoded cross-compilation path from `assets`
+  in `Cargo.toml`; `cargo-deb` now resolves the path dynamically via `--target`.
+- **`.rpm` packaging**: same path fix; add `glob = true` for `dashboard/dist`
+  to avoid "Is a directory" error in `cargo-generate-rpm`.
+
+---
+
 ## [0.3.0] - 2026-05-09
 
 ### Features
