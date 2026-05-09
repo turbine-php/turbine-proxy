@@ -303,8 +303,9 @@ jobs:
           path: artifacts/
 
       - name: Flatten artifacts directory
-        run: find artifacts/ -type f | xargs -I{} cp {} release-files/ || \
-             (mkdir -p release-files && find artifacts/ -type f -exec cp {} release-files/ \;)
+        run: |
+          mkdir -p release-files
+          find artifacts/ -type f -exec cp {} release-files/ \;
 
       - name: Generate combined checksums
         run: |
