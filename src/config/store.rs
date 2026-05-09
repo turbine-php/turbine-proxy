@@ -11,7 +11,8 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    BackendConfig, QueryRewriteConfig, QueryRuleConfig, RuleDestination, TlsMode, UserConfig,
+    secret, BackendConfig, QueryRewriteConfig, QueryRuleConfig, RuleDestination, TlsMode,
+    UserConfig,
 };
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
@@ -261,14 +262,16 @@ impl ConfigStore {
 
         let u_count: i64 = conn.query_row("SELECT COUNT(*) FROM config_users", [], |r| r.get(0))?;
         if u_count == 0 {
+            let enc_key = secret::load_encryption_key();
             for u in users {
+                let stored_pw = secret::prepare_for_storage(&u.password, enc_key.as_ref());
                 conn.execute(
                     "INSERT OR IGNORE INTO config_users
                      (name, password, allow_writes, max_connections)
                      VALUES (?1,?2,?3,?4)",
                     params![
                         u.name,
-                        u.password,
+                        stored_pw,
                         u.allow_writes as i64,
                         u.max_connections as i64
                     ],
@@ -614,6 +617,8 @@ impl ConfigStore {
         author_ip: &str,
         protocol: &str,
     ) -> Result<i64> {
+        let enc_key = secret::load_encryption_key();
+        let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO config_backends
@@ -623,7 +628,7 @@ impl ConfigStore {
                 protocol,
                 row.addr,
                 row.user,
-                row.password,
+                stored_pw,
                 row.database,
                 row.role,
                 row.weight,
@@ -658,6 +663,8 @@ impl ConfigStore {
         author_ip: &str,
         protocol: &str,
     ) -> Result<()> {
+        let enc_key = secret::load_encryption_key();
+        let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE config_backends SET
@@ -667,7 +674,7 @@ impl ConfigStore {
             params![
                 row.addr,
                 row.user,
-                row.password,
+                stored_pw,
                 row.database,
                 row.role,
                 row.weight,
@@ -733,13 +740,15 @@ impl ConfigStore {
     }
 
     pub fn create_user(&self, row: &UserRow, author_ip: &str) -> Result<i64> {
+        let enc_key = secret::load_encryption_key();
+        let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO config_users (name,password,allow_writes,max_connections,enabled)
              VALUES (?1,?2,?3,?4,?5)",
             params![
                 row.name,
-                row.password,
+                stored_pw,
                 row.allow_writes as i64,
                 row.max_connections,
                 row.enabled as i64,
@@ -760,6 +769,8 @@ impl ConfigStore {
     }
 
     pub fn update_user(&self, id: i64, row: &UserRow, author_ip: &str) -> Result<()> {
+        let enc_key = secret::load_encryption_key();
+        let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE config_users SET
@@ -767,7 +778,7 @@ impl ConfigStore {
              WHERE id=?6",
             params![
                 row.name,
-                row.password,
+                stored_pw,
                 row.allow_writes as i64,
                 row.max_connections,
                 row.enabled as i64,
@@ -940,6 +951,8 @@ impl ConfigStore {
             TlsMode::VerifyCa => "verify-ca",
             TlsMode::VerifyIdentity => "verify-identity",
         };
+        let enc_key = secret::load_encryption_key();
+        let stored_pw = secret::prepare_for_storage(&cfg.password, enc_key.as_ref());
         conn.execute(
             "INSERT INTO config_backends (protocol,addr,user,password,database,role,weight,backup,tls_mode)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -947,7 +960,7 @@ impl ConfigStore {
                 protocol,
                 cfg.addr,
                 cfg.user,
-                cfg.password,
+                stored_pw,
                 cfg.database,
                 role,
                 cfg.weight as i64,

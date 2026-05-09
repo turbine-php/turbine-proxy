@@ -25,6 +25,7 @@ hmac = "0.12"
 md5 = "0.7"
 base64 = "0.22"
 rand = "0.9"
+aes-gcm = "0.10"
 
 # Compression (MySQL protocol)
 flate2 = "1"

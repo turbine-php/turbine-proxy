@@ -65,8 +65,8 @@ impl AuthCache {
             map.insert(
                 u.name.clone(),
                 CachedEntry {
-                    stage2: stage2_hash(&u.password),
-                    sha256: sha256_stage2(&u.password),
+                    stage2: stage2_hash(&u.resolved_password()),
+                    sha256: sha256_stage2(&u.resolved_password()),
                     rules: UserRules {
                         allow_writes: u.allow_writes,
                         max_connections: u.max_connections,

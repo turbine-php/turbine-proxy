@@ -277,7 +277,7 @@ impl DatabaseProtocol for MySQLProtocol {
         let conn = mysql_connect(
             &config.addr,
             &config.user,
-            &config.password,
+            &config.resolved_password(),
             config.database.as_deref(),
             &config.tls_mode,
             config.tls_ca.as_deref(),

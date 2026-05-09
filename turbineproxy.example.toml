@@ -36,6 +36,16 @@ user     = "dbuser"
 password = "secret"
 database = "myapp"
 
+# External secret references — TurbineProxy resolves these at connection time,
+# so the actual secret value is never written to the config file or the SQLite
+# database.  Supported schemes:
+#
+#   password = "env:DB_PASSWORD"          # reads $DB_PASSWORD at runtime
+#   password = "file:/run/secrets/db_pw"  # reads the file, trims whitespace
+#                                         # (works with Docker Secrets and
+#                                         #  Kubernetes Secrets volume mounts)
+#   password = "literal-value"            # plain string (default, no prefix)
+
 # TLS for the primary connection (optional)
 # tls_mode = "off"             # off | required | verify-ca | verify-identity
 # tls_ca   = "/etc/ssl/ca.pem"

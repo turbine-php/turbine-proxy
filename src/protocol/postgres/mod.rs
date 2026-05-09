@@ -421,7 +421,7 @@ impl DatabaseProtocol for PostgreSQLProtocol {
             &mut reader,
             &mut writer,
             &config.user,
-            &config.password,
+            &config.resolved_password(),
             config.database.as_deref().unwrap_or("postgres"),
         )
         .await?;
@@ -519,7 +519,7 @@ impl PostgreSQLProtocol {
                 .users
                 .iter()
                 .find(|u| u.name == username)
-                .map(|u| u.password.clone())
+                .map(|u| u.resolved_password())
                 .unwrap_or_default();
 
             // Send AuthenticationCleartextPassword

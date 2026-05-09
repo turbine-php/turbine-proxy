@@ -1,6 +1,7 @@
 //! Configuration for TurbineProxy, loaded from TOML.
 #![allow(unused)]
 
+pub mod secret;
 pub mod store;
 pub use store::ConfigStore;
 
@@ -569,6 +570,17 @@ pub struct BackendConfig {
     pub max_connections: Option<usize>,
 }
 
+impl BackendConfig {
+    /// Resolve the password value, supporting external secret references:
+    ///
+    /// - `env:VAR_NAME`  — read from environment variable `VAR_NAME`
+    /// - `file:/path`    — read from file at `/path` (whitespace stripped)
+    /// - anything else   — returned as-is (literal password)
+    pub fn resolved_password(&self) -> String {
+        resolve_secret(&self.password)
+    }
+}
+
 /// Per-user proxy access configuration.
 /// Users listed here are verified before any backend connection is established.
 #[derive(Debug, Clone, Deserialize)]
@@ -601,6 +613,14 @@ pub struct UserConfig {
     /// Empty = use the server's default (no injection).
     #[serde(default)]
     pub transaction_isolation: String,
+}
+
+impl UserConfig {
+    /// Resolve the password value.  Supports `env:VAR` and `file:/path`
+    /// references — see [`resolve_secret`] for details.
+    pub fn resolved_password(&self) -> String {
+        resolve_secret(&self.password)
+    }
 }
 
 /// PROXY Protocol v1/v2 configuration.
@@ -900,6 +920,57 @@ fn default_mysql_server_version() -> String {
 }
 fn default_pgsql_server_version() -> String {
     "16.0".to_string()
+}
+
+/// Resolve an external secret reference in a password field.
+///
+/// Supported schemes:
+/// - `env:VAR_NAME`  — reads the value of environment variable `VAR_NAME`.
+/// - `file:/path`    — reads the contents of the file at `/path` and trims
+///   leading/trailing whitespace (handles trailing newlines).
+/// - `enc:<base64>`  — AES-256-GCM encrypted value; decrypted with the key
+///   from `TURBINEPROXY_SECRET_KEY`. Returns `""` if the
+///   key is missing or the ciphertext is corrupted.
+/// - anything else   — returned unchanged (literal value).
+///
+/// On error (variable not set, file not found, bad ciphertext) a warning is
+/// logged and an empty string is returned so the connection attempt fails at
+/// the auth layer with a clear error rather than panicking.
+pub fn resolve_secret(s: &str) -> String {
+    if let Some(var) = s.strip_prefix("env:") {
+        match std::env::var(var) {
+            Ok(v) => return v,
+            Err(e) => {
+                log::warn!("[config] resolve_secret: env var '{}' not set: {}", var, e);
+                return String::new();
+            }
+        }
+    }
+    if let Some(path) = s.strip_prefix("file:") {
+        match std::fs::read_to_string(path) {
+            Ok(v) => return v.trim().to_string(),
+            Err(e) => {
+                log::warn!("[config] resolve_secret: cannot read '{}': {}", path, e);
+                return String::new();
+            }
+        }
+    }
+    if s.starts_with(secret::ENC_PREFIX) {
+        match secret::load_encryption_key() {
+            Some(key) => match secret::decrypt(s, &key) {
+                Some(plain) => return plain,
+                None => {
+                    log::warn!("[config] resolve_secret: decryption failed for enc: value — wrong key or corrupted data");
+                    return String::new();
+                }
+            },
+            None => {
+                log::warn!("[config] resolve_secret: found enc: value but TURBINEPROXY_SECRET_KEY is not set");
+                return String::new();
+            }
+        }
+    }
+    s.to_string()
 }
 fn default_resolution_family() -> String {
     "system".to_string()
@@ -1471,5 +1542,46 @@ server_version = "15.4-aurora"
 "#;
         let cfg = ProxyConfig::from_str(toml).unwrap();
         assert_eq!(cfg.pgsql.server_version, "15.4-aurora");
+    }
+
+    // ── resolve_secret ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_secret_literal() {
+        assert_eq!(resolve_secret("mysecret"), "mysecret");
+        assert_eq!(resolve_secret(""), "");
+    }
+
+    #[test]
+    fn test_resolve_secret_env() {
+        std::env::set_var("TURBINEPROXY_TEST_SECRET", "hello_from_env");
+        assert_eq!(
+            resolve_secret("env:TURBINEPROXY_TEST_SECRET"),
+            "hello_from_env"
+        );
+        std::env::remove_var("TURBINEPROXY_TEST_SECRET");
+    }
+
+    #[test]
+    fn test_resolve_secret_env_missing_returns_empty() {
+        std::env::remove_var("TURBINEPROXY_TEST_MISSING_9999");
+        assert_eq!(resolve_secret("env:TURBINEPROXY_TEST_MISSING_9999"), "");
+    }
+
+    #[test]
+    fn test_resolve_secret_file() {
+        use std::io::Write;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "  file_secret").unwrap();
+        let path = format!("file:{}", f.path().display());
+        assert_eq!(resolve_secret(&path), "file_secret");
+    }
+
+    #[test]
+    fn test_resolve_secret_file_missing_returns_empty() {
+        assert_eq!(
+            resolve_secret("file:/tmp/turbineproxy_nonexistent_99999"),
+            ""
+        );
     }
 }
