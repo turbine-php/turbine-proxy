@@ -15,7 +15,7 @@ use crate::protocol::{
     BackendConnection, ClientAuthConfig, ClientSession, Command, DatabaseProtocol,
 };
 use crate::proxy::app_analytics::AppAnalyticsStore;
-use crate::proxy::classifier::{classify, QueryIntent};
+use crate::proxy::classifier::{classify, extract_sticky_hint, QueryIntent};
 use crate::proxy::error_events::{ErrorEvent, ErrorEventStore};
 use crate::proxy::fingerprint::{fingerprint, fingerprint_with_hash};
 use crate::proxy::heatmap::HeatmapStore;
@@ -403,6 +403,7 @@ impl ProxyServer {
             let gtid_aware_ryow = self.config.gtid_aware_ryow;
             let fast_forward = self.config.fast_forward;
             let select_version_forwarding = self.config.select_version_forwarding;
+            let server_version = self.config.server_version.clone();
             let sqli_detector = self.sqli_detector.clone();
             let query_whitelist = self.query_whitelist.clone();
             let audit_logger = self.audit_logger.clone();
@@ -435,6 +436,7 @@ impl ProxyServer {
                     gtid_aware_ryow,
                     fast_forward,
                     select_version_forwarding,
+                    server_version,
                     sqli_detector,
                     query_whitelist,
                     audit_logger,
@@ -499,6 +501,7 @@ async fn handle_connection(
     gtid_aware_ryow: bool,
     fast_forward: bool,
     select_version_forwarding: bool,
+    server_version: String,
     sqli_detector: Option<Arc<InjectionDetector>>,
     query_whitelist: Arc<QueryWhitelist>,
     audit_logger: Arc<AuditLogger>,
@@ -520,7 +523,7 @@ async fn handle_connection(
 
     let auth_config = ClientAuthConfig {
         connection_id: conn_id,
-        server_version: "8.0.36-TurbineProxy",
+        server_version,
     };
 
     let mut session: Box<dyn ClientSession> =
@@ -578,6 +581,13 @@ async fn handle_connection(
     let mut active_trace: Option<ActiveTrace> = None;
     // Per-connection consecutive error counter for client_error_limit enforcement.
     let mut consecutive_errors: u32 = 0;
+    // Sticky-backend hint: `/* sticky_backend=1 */` pins reads to one replica
+    // for read-consistency without a full transaction.
+    // sticky_hint_conn holds the pinned connection; sticky_hint_idx is the
+    // replica pool index (usize::MAX = primary fallback).
+    let mut sticky_hint_conn: Option<Box<dyn BackendConnection>> = None;
+    let mut sticky_hint_idx: usize = usize::MAX;
+    let mut sticky_hint_active = false;
     let mut error_window_start: Option<Instant> = None;
 
     // ── Per-user session initialisation ────────────────────────────────────────
@@ -658,6 +668,11 @@ async fn handle_connection(
                 if let Some(conn) = tx_conn.take() {
                     router.put_primary(conn).await;
                 }
+                if let Some(conn) = sticky_hint_conn.take() {
+                    router.put_replica(conn, sticky_hint_idx).await;
+                }
+                sticky_hint_idx = usize::MAX;
+                sticky_hint_active = false;
                 if let Err(e) = session.send_ok().await {
                     log::debug!("COM_RESET_CONNECTION send_ok error: {}", e);
                     break;
@@ -706,6 +721,44 @@ async fn handle_connection(
                     }
                     if let Err(e) = session.flush().await {
                         log::debug!("[ff] flush error: {}", e);
+                        break;
+                    }
+                    continue;
+                }
+
+                // ── PER-RULE FAST-FORWARD ────────────────────────────────────
+                // When a query rule has `fast_forward = true`, bypass the full
+                // routing/analytics pipeline for this specific query pattern,
+                // identical to the global fast_forward path above but scoped to
+                // queries that match the rule.
+                if !fast_forward
+                    && !in_tx
+                    && router
+                        .is_fast_forward_rule(sql, session.username(), session.database())
+                        .await
+                {
+                    log::debug!(
+                        "[conn {}] per-rule fast-forward: {}",
+                        conn_id,
+                        &sql[..sql.len().min(60)]
+                    );
+                    metrics.queries_total.fetch_add(1, Ordering::Relaxed);
+                    let result = router.route_fast(&sql_bytes, &mut tx_conn, false).await;
+                    match result {
+                        Ok(response) => {
+                            if let Err(e) = session.write_response(&response.bytes).await {
+                                log::debug!("[rule-ff] write error: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if let Err(we) = session.write_error("1", &e.to_string()).await {
+                                log::debug!("[rule-ff] write error packet failed: {}", we);
+                            }
+                        }
+                    }
+                    if let Err(e) = session.flush().await {
+                        log::debug!("[rule-ff] flush error: {}", e);
                         break;
                     }
                     continue;
@@ -1050,6 +1103,80 @@ async fn handle_connection(
                     }
                     let _ = session.flush().await;
                     continue;
+                }
+
+                // ── Sticky-backend hint ──────────────────────────────────────
+                // Process `/* sticky_backend=N */` before routing.  The hint
+                // only applies to reads outside of an explicit transaction.
+                if let Some(val) = extract_sticky_hint(sql) {
+                    if val {
+                        sticky_hint_active = true;
+                        log::debug!(
+                            "[conn {}] sticky_backend=1 — replica stickiness enabled",
+                            conn_id
+                        );
+                    } else if sticky_hint_active {
+                        sticky_hint_active = false;
+                        if let Some(conn) = sticky_hint_conn.take() {
+                            router.put_replica(conn, sticky_hint_idx).await;
+                        }
+                        sticky_hint_idx = usize::MAX;
+                        log::debug!(
+                            "[conn {}] sticky_backend=0 — replica stickiness cleared",
+                            conn_id
+                        );
+                    }
+                }
+
+                // When sticky hint is active and we are not already in an
+                // explicit transaction, route through the pinned replica.
+                if sticky_hint_active && !effective_in_tx && was_read {
+                    match router
+                        .route_sticky_query(&sql_bytes, &mut sticky_hint_conn, &mut sticky_hint_idx)
+                        .await
+                    {
+                        Ok(response) => {
+                            if let Err(e) = session.write_response(&response.bytes).await {
+                                log::debug!(
+                                    "[conn {}] write sticky response error: {}",
+                                    conn_id,
+                                    e
+                                );
+                                break;
+                            }
+                            if let Err(e) = session.flush().await {
+                                log::debug!("[conn {}] flush error (sticky): {}", conn_id, e);
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(e) => {
+                            let msg = e.to_string().to_lowercase();
+                            let is_conn_lost = msg.contains("gone away")
+                                || msg.contains("eof")
+                                || msg.contains("broken pipe")
+                                || msg.contains("connection reset")
+                                || msg.contains("2006")
+                                || msg.contains("2013");
+                            if is_conn_lost {
+                                log::warn!(
+                                    "[conn {}] sticky backend lost — clearing hint, retrying normally",
+                                    conn_id
+                                );
+                                // Drop rather than return — connection is dead.
+                                sticky_hint_conn = None;
+                                sticky_hint_active = false;
+                                sticky_hint_idx = usize::MAX;
+                                // Fall through to normal routing below.
+                            } else {
+                                if let Err(we) = session.write_error("1", &e.to_string()).await {
+                                    log::debug!("Write error packet failed: {}", we);
+                                }
+                                let _ = session.flush().await;
+                                continue;
+                            }
+                        }
+                    }
                 }
 
                 let result = if session_init_sqls.is_empty() {
@@ -1408,6 +1535,9 @@ async fn handle_connection(
     if let Some(conn) = stmt_conn {
         router.put_primary(conn).await;
     }
+    if let Some(conn) = sticky_hint_conn {
+        router.put_replica(conn, sticky_hint_idx).await;
+    }
 
     user_registry.on_disconnect(&session_username).await;
     app_analytics
@@ -1416,26 +1546,101 @@ async fn handle_connection(
     Ok(())
 }
 
-// ─── PROXY Protocol v1 parser ─────────────────────────────────────────────────
+// ─── PROXY Protocol v1 / v2 parser ───────────────────────────────────────────
 
-/// Attempt to read a PROXY Protocol v1 header from the TCP stream and return
-/// the real client address.  Consumes exactly the header bytes and leaves the
-/// stream positioned at the first MySQL handshake byte.
+/// 12-byte binary signature that begins every PROXY Protocol v2 header.
+const PPV2_SIGNATURE: &[u8; 12] = b"\r\n\r\n\x00\r\nQUIT\n";
+
+/// Detect and parse a PROXY Protocol header (v1 text or v2 binary).
 ///
-/// Returns `Some("ip:port")` on success, or `None` / error if no valid header
-/// is present (the connection is then processed with the original socket addr).
+/// Returns `Some("ip:port")` when a valid PROXY header is found, `None`
+/// otherwise (the connection is then processed with the original socket addr).
+///
+/// Auto-detection:
+/// - v2 binary: starts with the 12-byte signature `\r\n\r\n\x00\r\nQUIT\n`
+/// - v1 text  : starts with the ASCII string `"PROXY "`
+///
+/// Consumes exactly the header bytes and leaves the stream positioned at the
+/// first database-protocol handshake byte.
+async fn parse_proxy_header(stream: &mut TcpStream) -> Option<String> {
+    // Peek 12 bytes — enough to detect both v2 signature and v1 prefix.
+    let mut peek_buf = [0u8; 12];
+    let n = stream.peek(&mut peek_buf).await.ok()?;
+    if n >= 12 && peek_buf.starts_with(PPV2_SIGNATURE) {
+        parse_proxy_v2(stream).await
+    } else if n >= 6 && peek_buf[..6] == *b"PROXY " {
+        parse_proxy_v1(stream).await
+    } else {
+        None
+    }
+}
+
+/// Parse a PROXY Protocol v2 binary header.
+///
+/// Fixed-size 16-byte header layout:
+///   [0..12]  signature (already verified by caller)
+///   [12]     version (high nibble) | command (low nibble)
+///   [13]     address family (high nibble) | transport (low nibble)
+///   [14..16] address block length (big-endian u16)
+///
+/// Followed by a variable-length address block consumed regardless of command.
+async fn parse_proxy_v2(stream: &mut TcpStream) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+    let mut hdr = [0u8; 16];
+    stream.read_exact(&mut hdr).await.ok()?;
+
+    let ver_cmd = hdr[12];
+    let family = hdr[13];
+    let addr_len = u16::from_be_bytes([hdr[14], hdr[15]]) as usize;
+
+    // Always consume the address block to keep the stream positioned correctly.
+    let mut addr_block = vec![0u8; addr_len];
+    if addr_len > 0 {
+        stream.read_exact(&mut addr_block).await.ok()?;
+    }
+
+    // Version nibble must be 2.
+    if (ver_cmd >> 4) != 0x2 {
+        return None;
+    }
+
+    match ver_cmd & 0x0F {
+        // LOCAL (0x0): health-check — no client address to expose.
+        0x00 => None,
+        // PROXY (0x1): extract real source address.
+        0x01 => match family {
+            // AF_INET + STREAM (0x11): 4 src + 4 dst + 2 sport + 2 dport = 12 bytes.
+            0x11 if addr_block.len() >= 12 => {
+                let src_ip = std::net::Ipv4Addr::new(
+                    addr_block[0],
+                    addr_block[1],
+                    addr_block[2],
+                    addr_block[3],
+                );
+                let src_port = u16::from_be_bytes([addr_block[8], addr_block[9]]);
+                Some(format!("{}:{}", src_ip, src_port))
+            }
+            // AF_INET6 + STREAM (0x21): 16 src + 16 dst + 2 sport + 2 dport = 36 bytes.
+            0x21 if addr_block.len() >= 36 => {
+                let octets: [u8; 16] = addr_block[..16].try_into().ok()?;
+                let src_ip = std::net::Ipv6Addr::from(octets);
+                let src_port = u16::from_be_bytes([addr_block[32], addr_block[33]]);
+                Some(format!("[{}]:{}", src_ip, src_port))
+            }
+            // UNSPEC or other families: no usable address.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Parse a PROXY Protocol v1 text header.
 ///
 /// PROXY v1 grammar: `PROXY (TCP4|TCP6|UNKNOWN) src dst sport dport\r\n`
 /// Maximum header length is 108 bytes per the HAProxy PROXY Protocol spec.
-async fn parse_proxy_header(stream: &mut TcpStream) -> Option<String> {
+async fn parse_proxy_v1(stream: &mut TcpStream) -> Option<String> {
     use tokio::io::AsyncReadExt;
-    // Peek 6 bytes — avoids consuming data if the header is absent.
-    let mut peek_buf = [0u8; 6];
-    let n = stream.peek(&mut peek_buf).await.ok()?;
-    if n < 6 || &peek_buf != b"PROXY " {
-        return None;
-    }
-    // Read the header line byte by byte until \r\n (max 108 bytes).
+    // Read byte-by-byte until \r\n (max 108 bytes).
     let mut line: Vec<u8> = Vec::with_capacity(108);
     loop {
         let mut b = [0u8; 1];
@@ -1445,7 +1650,7 @@ async fn parse_proxy_header(stream: &mut TcpStream) -> Option<String> {
             break;
         }
         if line.len() > 108 {
-            return None; // malformed header — too long
+            return None; // malformed — too long
         }
     }
     let s = std::str::from_utf8(&line).ok()?;

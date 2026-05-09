@@ -46,12 +46,13 @@ database = "myapp"
 # Receive read queries from both MySQL and PostgreSQL listeners.
 # Add multiple [[shared.replicas]] sections for additional replicas.
 # [[shared.replicas]]
-# addr     = "replica-1:3306"
-# user     = "dbuser"
-# password = "secret"
-# database = "myapp"
-# weight   = 100    # relative weight for weighted round-robin (default: 100)
-# backup   = false  # if true, only used when all non-backup replicas are down
+# addr            = "replica-1:3306"
+# user            = "dbuser"
+# password        = "secret"
+# database        = "myapp"
+# weight          = 100    # relative weight for weighted round-robin (default: 100)
+# backup          = false  # if true, only used when all non-backup replicas are down
+# max_connections = 50     # hard cap on open connections to this backend; omit for unlimited
 
 # ── Shared per-user access rules (optional) ───────────────────────────────────
 # When non-empty, only listed users can connect.  Omit to accept any credentials
@@ -91,6 +92,18 @@ database = "myapp"
 # listen_addr = "0.0.0.0:3307"
 # # All other settings (primary, replicas, pool_size …) are inherited from [shared]
 # # unless overridden here.
+#
+# # PROXY Protocol v2 — enable when sitting behind HAProxy, AWS NLB, or any
+# # load balancer that prepends PROXY headers so the real client IP is preserved.
+# # Both v1 (text) and v2 (binary) formats are auto-detected.
+# [mysql.proxy_protocol]
+# enabled = true
+#
+# # Server version string sent to MySQL clients in the initial handshake.
+# # Useful when clients or frameworks require a specific version string.
+# # Default: "8.0.36-TurbineProxy"
+# [mysql]
+# server_version = "5.7.44-aurora"
 
 # ── PostgreSQL listener ───────────────────────────────────────────────────────
 # When enabled, the proxy also listens on a PostgreSQL port and routes
@@ -109,6 +122,16 @@ health_check_database = "postgres"
 # max_connections           = 1000
 # connection_max_idle_secs  = 55
 # read_your_own_writes_ms   = 0
+
+# PROXY Protocol v2 for PostgreSQL — same behaviour as MySQL above.
+# [pgsql.proxy_protocol]
+# enabled = true
+
+# Server version string reported to PostgreSQL clients during the startup
+# handshake. Useful when migrating to/from Aurora, Cloud SQL, etc.
+# Default: "16.0".
+# [pgsql]
+# server_version = "15.4-aurora"
 
 # PostgreSQL-specific backend override (optional — inherits from [shared.primary]):
 # [pgsql.primary]
@@ -262,6 +285,19 @@ primary_failover_threshold = 3
 #   rollout_pct          — 1–100: percentage of matching queries routed via this rule.
 #                          Remaining traffic falls through to the next rule / heuristic.
 #                          Omit or set to 0 to apply the rule to all matching queries.
+#   dry_run              — true = log the match but do NOT apply the rule; the query
+#                          falls through to the next matching rule or the default
+#                          heuristic. Useful for testing new rules in production
+#                          without affecting traffic.
+#   qps_limit            — Maximum queries per second this rule will forward to the
+#                          backend. Implemented as a token-bucket: bursts up to
+#                          `qps_limit` tokens are absorbed instantly; sustained traffic
+#                          above the limit is rejected with "Too many requests".
+#                          0 or omit = unlimited.
+#   fast_forward         — true = bypass routing/analytics/security for queries matching
+#                          this rule and send directly to the primary. More surgical than
+#                          the global `fast_forward` option — only queries matching this
+#                          rule's pattern/user/schema are affected. Default: false.
 #   comment              — Human-readable description shown in the dashboard
 #
 # Example: force read-after-write queries to the primary
@@ -298,6 +334,27 @@ primary_failover_threshold = 3
 # mirror_to = "canary-db:3306"
 # rollout_pct = 10
 # comment = "Shadow 10% of reads to canary for validation"
+#
+# Example: test a new rule without affecting traffic (dry run)
+# [[query_rules]]
+# match_pattern = "(?i)SELECT .* FROM new_table"
+# destination = "replica"
+# dry_run = true
+# comment = "Dry-run: log matches but don't route yet"
+#
+# Example: rate-limit expensive analytics queries to 20 QPS
+# [[query_rules]]
+# match_pattern = "(?i)SELECT .* FROM analytics"
+# destination = "replica"
+# qps_limit = 20
+# comment = "Analytics queries capped at 20 QPS (token bucket)"
+#
+# Example: fast-forward a hot status-check query (skip analytics/rules overhead)
+# [[query_rules]]
+# match_pattern = "(?i)^SELECT 1$"
+# destination = "primary"
+# fast_forward = true
+# comment = "Health-check ping: zero-overhead fast path"
 
 # ── Query Rewriting Rules (optional) ──────────────────────────────────────────
 #

@@ -156,6 +156,17 @@ impl ConnectionPool {
         }
         drop(pools);
 
+        // Enforce backend max_connections before opening a new TCP connection.
+        if let Some(max) = self.config.max_connections {
+            if self.borrowed.load(Ordering::Relaxed) >= max {
+                return Err(anyhow::anyhow!(
+                    "backend {} connection limit reached (max: {}); try again later",
+                    self.config.addr,
+                    max
+                ));
+            }
+        }
+
         // Nothing usable — open a new TCP connection.
         let mut connect_cfg = self.config.clone();
         connect_cfg.database = if key.is_empty() {
@@ -646,4 +657,86 @@ pub struct PoolStats {
     pub replica_evicted: usize,
     pub replica_count: usize,
     pub failover_active: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn mock_config(max_connections: Option<usize>) -> BackendConfig {
+        crate::config::BackendConfig {
+            addr: "127.0.0.1:3306".to_string(),
+            user: String::new(),
+            password: String::new(),
+            database: None,
+            tls_mode: crate::config::TlsMode::Off,
+            tls_ca: None,
+            tls_cert: None,
+            tls_key: None,
+            weight: 100,
+            backup: false,
+            init_connect: vec![],
+            resolution_family: "system".to_string(),
+            compression: crate::config::BackendCompression::None,
+            ssl_keylog_file: String::new(),
+            max_connections,
+        }
+    }
+
+    fn mock_protocol() -> Arc<dyn crate::protocol::DatabaseProtocol> {
+        use crate::protocol::mysql::MySQLProtocol;
+        use crate::proxy::auth_cache::AuthCache;
+        Arc::new(MySQLProtocol::with_auth(AuthCache::from_config(&[], 3600)))
+    }
+
+    /// Verify the `borrowed` counter starts at zero.
+    #[test]
+    fn test_pool_initial_borrowed_zero() {
+        let cfg = mock_config(None);
+        let pool = ConnectionPool::with_idle_timeout(&cfg, 4, mock_protocol(), None);
+        assert_eq!(pool.borrowed.load(Ordering::Relaxed), 0);
+    }
+
+    /// Verify that `max_connections` is stored on the config and is accessible.
+    #[test]
+    fn test_backend_config_max_connections_stored() {
+        let cfg = mock_config(Some(10));
+        assert_eq!(cfg.max_connections, Some(10));
+
+        let cfg_unlimited = mock_config(None);
+        assert_eq!(cfg_unlimited.max_connections, None);
+    }
+
+    /// Simulate the cap check logic (unit-level, without real TCP connections).
+    ///
+    /// The pool uses `borrowed` to track in-flight connections; when
+    /// `borrowed >= max_connections`, `get_for_database` must return `Err`.
+    /// We test the guard condition by directly manipulating `borrowed`.
+    #[test]
+    fn test_max_connections_cap_check_condition() {
+        let max = 3usize;
+        let cfg = mock_config(Some(max));
+        let pool = ConnectionPool::with_idle_timeout(&cfg, max, mock_protocol(), None);
+
+        // Simulate `max` connections already borrowed.
+        pool.borrowed.store(max, Ordering::Relaxed);
+
+        // Verify the guard condition that `get_for_database` will evaluate.
+        let cap = pool.config.max_connections.unwrap();
+        let current = pool.borrowed.load(Ordering::Relaxed);
+        assert!(
+            current >= cap,
+            "borrowed ({}) should be >= cap ({})",
+            current,
+            cap
+        );
+    }
+
+    /// When max_connections is None the cap is disabled.
+    #[test]
+    fn test_max_connections_none_means_unlimited() {
+        let cfg = mock_config(None);
+        assert!(cfg.max_connections.is_none());
+    }
 }

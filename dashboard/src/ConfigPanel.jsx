@@ -141,7 +141,7 @@ const ACTIONS = [
 ]
 
 function emptyRule() {
-  return { pattern: '', destination: 'replica', action: 'route', priority: 100, enabled: true }
+  return { pattern: '', destination: 'replica', action: 'route', priority: 100, enabled: true, dry_run: false, qps_limit: '', fast_forward: false }
 }
 
 function QueryRulesConfig() {
@@ -170,7 +170,7 @@ function QueryRulesConfig() {
     try {
       await apiFetch('/api/config/rules', {
         method: 'POST',
-        body: JSON.stringify({ ...form, priority: Number(form.priority) }),
+        body: JSON.stringify({ ...form, priority: Number(form.priority), qps_limit: form.qps_limit === '' ? null : Number(form.qps_limit) }),
       })
       setAdding(false)
       setForm(emptyRule())
@@ -182,7 +182,7 @@ function QueryRulesConfig() {
     try {
       await apiFetch(`/api/config/rules/${id}`, {
         method: 'PUT',
-        body: JSON.stringify({ ...editForm, priority: Number(editForm.priority) }),
+        body: JSON.stringify({ ...editForm, priority: Number(editForm.priority), qps_limit: editForm.qps_limit === '' ? null : Number(editForm.qps_limit) }),
       })
       setEditing(null)
       load()
@@ -223,13 +223,16 @@ function QueryRulesConfig() {
       {/* add form */}
       {adding && (
         <div style={{ background: 'var(--surface)', border: '1px solid var(--accent)', borderRadius: 10, padding: 16, marginBottom: 14 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 80px', gap: 10, marginBottom: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 80px 90px', gap: 10, marginBottom: 10 }}>
             <Field label={_('Pattern (regex)')} value={form.pattern} onChange={v => setForm(f => ({ ...f, pattern: v }))} placeholder="^SELECT" />
             <Select label={_('Destination')} value={form.destination} onChange={v => setForm(f => ({ ...f, destination: v }))} options={DESTINATIONS} />
             <Select label={_('Action')} value={form.action} onChange={v => setForm(f => ({ ...f, action: v }))} options={ACTIONS} />
             <Field label={_('Priority')} value={form.priority} onChange={v => setForm(f => ({ ...f, priority: v }))} type="number" />
+            <Field label={_('QPS limit')} value={form.qps_limit} onChange={v => setForm(f => ({ ...f, qps_limit: v }))} type="number" placeholder="∞" />
           </div>
           <Toggle label={_('Enabled')} value={form.enabled} onChange={v => setForm(f => ({ ...f, enabled: v }))} />
+          <Toggle label={_('Dry run (log only, no routing)')} value={form.dry_run} onChange={v => setForm(f => ({ ...f, dry_run: v }))} />
+          <Toggle label={_('Fast forward (bypass routing/analytics pipeline)')} value={form.fast_forward} onChange={v => setForm(f => ({ ...f, fast_forward: v }))} />
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button onClick={save} style={{ background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 7, padding: '6px 16px', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>{_('Save')}</button>
             <button onClick={() => { setAdding(false); setErr(null) }} style={{ background: 'transparent', color: 'var(--subtext)', border: '1px solid var(--border)', borderRadius: 7, padding: '6px 14px', cursor: 'pointer', fontSize: 13 }}>{_('Cancel')}</button>
@@ -245,6 +248,9 @@ function QueryRulesConfig() {
             <th style={{ textAlign: 'left', padding: '6px 8px' }}>{_('Dest')}</th>
             <th style={{ textAlign: 'left', padding: '6px 8px' }}>{_('Action')}</th>
             <th style={{ textAlign: 'right', padding: '6px 8px' }}>{_('Priority')}</th>
+            <th style={{ textAlign: 'right', padding: '6px 8px' }}>{_('QPS')}</th>
+            <th style={{ textAlign: 'center', padding: '6px 8px' }}>{_('Dry run')}</th>
+            <th style={{ textAlign: 'center', padding: '6px 8px' }}>{_('Fast-fwd')}</th>
             <th style={{ textAlign: 'center', padding: '6px 8px' }}>{_('Enabled')}</th>
             <th style={{ textAlign: 'right', padding: '6px 8px' }}></th>
           </tr>
@@ -256,6 +262,9 @@ function QueryRulesConfig() {
               <td style={{ padding: '6px 8px' }}><select value={editForm.destination} onChange={e => setEditForm(f => ({ ...f, destination: e.target.value }))} style={{ background: 'var(--input-bg, var(--surface2))', border: '1px solid var(--border)', borderRadius: 5, padding: '4px 8px', color: 'var(--text)', fontSize: 13 }}>{DESTINATIONS.map(o => <option key={o.value} value={o.value}>{_(o.label)}</option>)}</select></td>
               <td style={{ padding: '6px 8px' }}><select value={editForm.action} onChange={e => setEditForm(f => ({ ...f, action: e.target.value }))} style={{ background: 'var(--input-bg, var(--surface2))', border: '1px solid var(--border)', borderRadius: 5, padding: '4px 8px', color: 'var(--text)', fontSize: 13 }}>{ACTIONS.map(o => <option key={o.value} value={o.value}>{_(o.label)}</option>)}</select></td>
               <td style={{ padding: '6px 8px' }}><input type="number" value={editForm.priority} onChange={e => setEditForm(f => ({ ...f, priority: e.target.value }))} style={{ width: 60, background: 'var(--input-bg, var(--surface2))', border: '1px solid var(--border)', borderRadius: 5, padding: '4px 8px', color: 'var(--text)', fontSize: 13 }} /></td>
+              <td style={{ padding: '6px 8px', textAlign: 'right' }}><input type="number" value={editForm.qps_limit ?? ''} onChange={e => setEditForm(f => ({ ...f, qps_limit: e.target.value }))} placeholder="∞" style={{ width: 70, background: 'var(--input-bg, var(--surface2))', border: '1px solid var(--border)', borderRadius: 5, padding: '4px 8px', color: 'var(--text)', fontSize: 13 }} /></td>
+              <td style={{ padding: '6px 8px', textAlign: 'center' }}><input type="checkbox" checked={!!editForm.dry_run} onChange={e => setEditForm(f => ({ ...f, dry_run: e.target.checked }))} /></td>
+              <td style={{ padding: '6px 8px', textAlign: 'center' }}><input type="checkbox" checked={!!editForm.fast_forward} onChange={e => setEditForm(f => ({ ...f, fast_forward: e.target.checked }))} /></td>
               <td style={{ padding: '6px 8px', textAlign: 'center' }}><input type="checkbox" checked={!!editForm.enabled} onChange={e => setEditForm(f => ({ ...f, enabled: e.target.checked }))} /></td>
               <td style={{ padding: '6px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                 <button onClick={() => update(row.id)} style={{ marginRight: 4, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 5, padding: '4px 10px', cursor: 'pointer', fontSize: 12 }}><Check size={12} /></button>
@@ -268,6 +277,17 @@ function QueryRulesConfig() {
               <td style={{ padding: '8px 8px' }}><span style={{ background: row.destination === 'primary' ? 'var(--red-soft, rgba(239,68,68,.12))' : 'rgba(99,102,241,.12)', color: row.destination === 'primary' ? 'var(--red)' : '#818cf8', borderRadius: 4, padding: '2px 7px', fontSize: 11, fontWeight: 700 }}>{row.destination}</span></td>
               <td style={{ padding: '8px 8px', color: 'var(--subtext)', fontSize: 12 }}>{row.action}</td>
               <td style={{ padding: '8px 8px', textAlign: 'right', color: 'var(--subtext)', fontSize: 12 }}>{row.priority}</td>
+              <td style={{ padding: '8px 8px', textAlign: 'right', color: 'var(--subtext)', fontSize: 12 }}>{row.qps_limit ?? '∞'}</td>
+              <td style={{ padding: '8px 8px', textAlign: 'center' }}>
+                <span style={{ color: row.dry_run ? 'var(--yellow, #f59e0b)' : 'var(--subtext)', fontWeight: 700, fontSize: 12 }}>
+                  {row.dry_run ? '✓' : '—'}
+                </span>
+              </td>
+              <td style={{ padding: '8px 8px', textAlign: 'center' }}>
+                <span style={{ color: row.fast_forward ? 'var(--accent)' : 'var(--subtext)', fontWeight: 700, fontSize: 12 }}>
+                  {row.fast_forward ? '✓' : '—'}
+                </span>
+              </td>
               <td style={{ padding: '8px 8px', textAlign: 'center' }}>
                 <span style={{ color: row.enabled ? 'var(--green)' : 'var(--subtext)', fontWeight: 700, fontSize: 12 }}>
                   {row.enabled ? '✓' : '—'}

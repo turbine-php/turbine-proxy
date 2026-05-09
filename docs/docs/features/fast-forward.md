@@ -79,3 +79,36 @@ Even in fast-forward mode, the proxy tracks transaction state from the SQL text:
 | Any other query in a transaction | Routed to the same connection opened by `BEGIN` |
 
 This means multi-statement transactions work correctly — you do not need to manage connection affinity in your application.
+
+---
+
+## Per-Rule Fast Forward
+
+Instead of enabling fast-forward for an entire listener, you can apply it to individual query rules. This lets you bypass the pipeline for specific hot paths while keeping full observability for everything else:
+
+```toml
+[[query_rules]]
+match_pattern = "(?i)^SELECT 1$"
+destination   = "primary"
+fast_forward  = true
+comment       = "Health-check ping — zero-overhead fast path"
+
+[[query_rules]]
+match_pattern = "(?i)^INSERT INTO events"
+destination   = "primary"
+fast_forward  = true
+comment       = "High-frequency event inserts"
+```
+
+Per-rule fast-forward has the same bypass semantics as the global option: query fingerprinting, routing rules, caching, RYOW, N+1 detection, SQL injection protection, and analytics are all skipped for matching queries. The rule's match itself (regex evaluation) is still performed.
+
+**When to use per-rule vs. global:**
+
+| | Global `fast_forward` | Per-rule `fast_forward` |
+|--|--|--|
+| Granularity | All queries on the listener | Only queries matching the rule |
+| Analytics | Disabled for all queries | Disabled only for matching queries |
+| SQL injection protection | Disabled for all queries | Disabled only for matching queries |
+| Use case | Dedicated write-only pools | Hot paths in a mixed workload |
+
+See [Query Routing Rules](query-routing#per-rule-fast-forward) for the full rule configuration reference.

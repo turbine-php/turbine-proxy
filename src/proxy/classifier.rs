@@ -54,46 +54,89 @@ impl QueryClassifier for MySQLClassifier {
     }
 }
 
+// ─── ASCII lookup table ───────────────────────────────────────────────────────
+
+/// Maps every byte to its ASCII uppercase equivalent.
+/// Non-alphabetic bytes are unchanged. Built at compile time, zero runtime cost.
+const UPPER: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        t[i] = if i >= b'a' as usize && i <= b'z' as usize {
+            (i - 32) as u8
+        } else {
+            i as u8
+        };
+        i += 1;
+    }
+    t
+};
+
+/// Case-insensitive ASCII prefix match using the lookup table.
+/// `kw` must be all-uppercase ASCII bytes.
+#[inline(always)]
+fn starts_with_kw(bytes: &[u8], kw: &[u8]) -> bool {
+    bytes.len() >= kw.len()
+        && bytes[..kw.len()]
+            .iter()
+            .zip(kw)
+            .all(|(&b, &k)| UPPER[b as usize] == k)
+}
+
+/// Case-insensitive substring scan using the lookup table.
+/// `pattern` must be all-uppercase ASCII bytes.
+/// Runs in O(n·m) but `m` is always ≤ 10 bytes for SQL keywords.
+#[inline]
+fn contains_kw(bytes: &[u8], pattern: &[u8]) -> bool {
+    let plen = pattern.len();
+    if bytes.len() < plen {
+        return false;
+    }
+    bytes
+        .windows(plen)
+        .any(|w| w.iter().zip(pattern).all(|(&b, &k)| UPPER[b as usize] == k))
+}
+
 // ─── Standalone classify (kept for tests and direct use) ─────────────────────
 
 /// Classify a SQL query string into a routing intent.
 /// Uses simple prefix matching — no full SQL parsing needed.
+///
+/// # Performance
+/// All comparisons use a compile-time 256-byte ASCII uppercase lookup table.
+/// No heap allocation, no `to_uppercase()` copy — safe to call on every query.
 pub fn classify(sql: &str) -> QueryIntent {
     let trimmed = sql.trim_start();
     let effective = skip_leading_comments(trimmed);
-    let upper: String = effective
-        .chars()
-        .take(20)
-        .collect::<String>()
-        .to_uppercase();
+    let bytes = effective.as_bytes();
 
-    if upper.starts_with("SELECT") || upper.starts_with("(SELECT") {
-        let sql_upper = sql.to_uppercase();
-        if sql_upper.contains("FOR UPDATE") || sql_upper.contains("FOR SHARE") {
+    if starts_with_kw(bytes, b"SELECT") || starts_with_kw(bytes, b"(SELECT") {
+        let sql_bytes = sql.as_bytes();
+        if contains_kw(sql_bytes, b"FOR UPDATE") || contains_kw(sql_bytes, b"FOR SHARE") {
             return QueryIntent::Write;
         }
         QueryIntent::Read
-    } else if upper.starts_with("INSERT")
-        || upper.starts_with("UPDATE")
-        || upper.starts_with("DELETE")
-        || upper.starts_with("REPLACE")
-        || upper.starts_with("CREATE")
-        || upper.starts_with("ALTER")
-        || upper.starts_with("DROP")
-        || upper.starts_with("TRUNCATE")
-        || upper.starts_with("RENAME")
-        || upper.starts_with("LOAD")
-        || upper.starts_with("GRANT")
-        || upper.starts_with("REVOKE")
+    } else if starts_with_kw(bytes, b"INSERT")
+        || starts_with_kw(bytes, b"UPDATE")
+        || starts_with_kw(bytes, b"DELETE")
+        || starts_with_kw(bytes, b"REPLACE")
+        || starts_with_kw(bytes, b"CREATE")
+        || starts_with_kw(bytes, b"ALTER")
+        || starts_with_kw(bytes, b"DROP")
+        || starts_with_kw(bytes, b"TRUNCATE")
+        || starts_with_kw(bytes, b"RENAME")
+        || starts_with_kw(bytes, b"LOAD")
+        || starts_with_kw(bytes, b"GRANT")
+        || starts_with_kw(bytes, b"REVOKE")
     {
         QueryIntent::Write
-    } else if upper.starts_with("BEGIN")
-        || upper.starts_with("START TRANSACTION")
-        || upper.starts_with("COMMIT")
-        || upper.starts_with("ROLLBACK")
-        || upper.starts_with("SAVEPOINT")
-        || upper.starts_with("RELEASE SAVEPOINT")
-        || upper.starts_with("XA ")
+    } else if starts_with_kw(bytes, b"BEGIN")
+        || starts_with_kw(bytes, b"START TRANSACTION")
+        || starts_with_kw(bytes, b"COMMIT")
+        || starts_with_kw(bytes, b"ROLLBACK")
+        || starts_with_kw(bytes, b"SAVEPOINT")
+        || starts_with_kw(bytes, b"RELEASE SAVEPOINT")
+        || starts_with_kw(bytes, b"XA ")
     {
         QueryIntent::Transaction
     } else {
@@ -158,6 +201,49 @@ fn skip_leading_comments(s: &str) -> &str {
         break;
     }
     remaining
+}
+
+// ─── Sticky backend hint ──────────────────────────────────────────────────────
+
+/// Extract the `sticky_backend` routing hint from SQL block comments.
+///
+/// The hint can appear anywhere inside a `/* … */` comment:
+///
+/// ```text
+/// /* sticky_backend=1 */ SELECT …   →  Some(true)  enable stickiness
+/// /* sticky_backend=0 */ SELECT …   →  Some(false) disable stickiness
+/// SELECT …                          →  None         no change
+/// ```
+///
+/// Matching is case-insensitive; surrounding whitespace inside the comment
+/// value is ignored.  The first matching comment wins.
+pub fn extract_sticky_hint(sql: &str) -> Option<bool> {
+    const KEY: &str = "sticky_backend=";
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            let comment_start = i + 2;
+            if let Some(end_offset) = sql[comment_start..].find("*/") {
+                let comment = &sql[comment_start..comment_start + end_offset];
+                let comment_up = comment.to_ascii_uppercase();
+                let key_up = KEY.to_ascii_uppercase();
+                if let Some(pos) = comment_up.find(key_up.as_str()) {
+                    let after = comment[pos + KEY.len()..].trim_start();
+                    if after.starts_with('1') {
+                        return Some(true);
+                    }
+                    if after.starts_with('0') {
+                        return Some(false);
+                    }
+                }
+                i = comment_start + end_offset + 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -339,5 +425,90 @@ mod tests {
             1,
             "duplicates should be removed"
         );
+    }
+
+    // ── extract_sticky_hint ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_sticky_hint_enable() {
+        assert_eq!(
+            extract_sticky_hint("/* sticky_backend=1 */ SELECT 1"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_extract_sticky_hint_disable() {
+        assert_eq!(
+            extract_sticky_hint("/* sticky_backend=0 */ SELECT 1"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_extract_sticky_hint_absent() {
+        assert_eq!(extract_sticky_hint("SELECT 1"), None);
+        assert_eq!(extract_sticky_hint("/* no_hint */ SELECT 1"), None);
+    }
+
+    #[test]
+    fn test_extract_sticky_hint_case_insensitive() {
+        assert_eq!(
+            extract_sticky_hint("/* STICKY_BACKEND=1 */ SELECT 1"),
+            Some(true)
+        );
+        assert_eq!(
+            extract_sticky_hint("/* Sticky_Backend=0 */ SELECT 1"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_extract_sticky_hint_multiple_comments() {
+        // First matching comment wins.
+        assert_eq!(
+            extract_sticky_hint("/* sticky_backend=1 */ /* other */ SELECT 1"),
+            Some(true)
+        );
+        // Non-matching comment before matching one.
+        assert_eq!(
+            extract_sticky_hint("/* unrelated */ /* sticky_backend=0 */ SELECT 1"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_extract_sticky_hint_no_value() {
+        // Key present but no valid digit after '='.
+        assert_eq!(extract_sticky_hint("/* sticky_backend= */ SELECT 1"), None);
+        assert_eq!(extract_sticky_hint("/* sticky_backend=x */ SELECT 1"), None);
+    }
+
+    // ── lookup-table helpers ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_starts_with_kw_case_insensitive() {
+        assert!(starts_with_kw(b"select 1", b"SELECT"));
+        assert!(starts_with_kw(b"SELECT 1", b"SELECT"));
+        assert!(starts_with_kw(b"SeLeCt 1", b"SELECT"));
+        assert!(!starts_with_kw(b"INSERT", b"SELECT"));
+        assert!(!starts_with_kw(b"SEL", b"SELECT")); // too short
+    }
+
+    #[test]
+    fn test_contains_kw_case_insensitive() {
+        assert!(contains_kw(b"SELECT * FROM t FOR UPDATE", b"FOR UPDATE"));
+        assert!(contains_kw(b"select * from t for update", b"FOR UPDATE"));
+        assert!(contains_kw(b"select * from t FOR SHARE", b"FOR SHARE"));
+        assert!(!contains_kw(b"SELECT 1", b"FOR UPDATE"));
+        assert!(!contains_kw(b"FOR", b"FOR UPDATE")); // too short
+    }
+
+    #[test]
+    fn test_upper_lut_covers_all_ascii() {
+        for b in 0u8..=127 {
+            let expected = (b as char).to_ascii_uppercase() as u8;
+            assert_eq!(UPPER[b as usize], expected, "UPPER[{}] mismatch", b);
+        }
     }
 }

@@ -110,7 +110,7 @@ impl DatabaseProtocol for MySQLProtocol {
 
         let handshake = HandshakeV10 {
             protocol_version: 10,
-            server_version: config.server_version.to_string(),
+            server_version: config.server_version.clone(),
             connection_id: config.connection_id,
             auth_plugin_data_1: challenge_1,
             auth_plugin_data_2: challenge_2,

@@ -302,7 +302,7 @@ async fn handle_pg_connection(
 ) -> anyhow::Result<()> {
     let auth_cfg = ClientAuthConfig {
         connection_id: conn_id,
-        server_version: "16.0",
+        server_version: srv.config.server_version.clone(),
     };
 
     let mut session = srv

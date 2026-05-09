@@ -105,3 +105,51 @@ curl -X POST http://localhost:8080/api/reload
 ```
 
 Or send `SIGHUP` to the process. The config file is re-read and rules are recompiled atomically.
+
+---
+
+## Dry Run
+
+Test a new rule in production without affecting traffic. The rule matches and is logged, but the query falls through to the next rule or the default heuristic:
+
+```toml
+[[query_rules]]
+match_pattern = "(?i)SELECT.*FROM.*new_feature"
+destination   = "replica"
+dry_run       = true
+comment       = "Validating rule before enabling"
+```
+
+Dry-run hits are visible in the dashboard rule statistics.
+
+---
+
+## Rate Limiting (QPS Limit)
+
+Cap the number of queries per second that a rule will forward to the backend. Implemented as a **token bucket** — short bursts up to `qps_limit` tokens are absorbed instantly; sustained traffic above the limit is rejected immediately with an error:
+
+```toml
+[[query_rules]]
+match_pattern = "(?i)SELECT.*FROM.*analytics"
+destination   = "replica"
+qps_limit     = 20
+comment       = "Limit analytics queries to 20 QPS"
+```
+
+Set to `0` (default) for unlimited.
+
+---
+
+## Per-Rule Fast Forward
+
+Bypass the routing, analytics, and security pipeline for queries matching a specific rule. More surgical than the [global `fast_forward` listener option](fast-forward):
+
+```toml
+[[query_rules]]
+match_pattern = "(?i)^SELECT 1$"
+destination   = "primary"
+fast_forward  = true
+comment       = "Health-check ping — zero-overhead fast path"
+```
+
+Only queries that match this rule are fast-forwarded; all other queries continue through the full pipeline. See [Fast-Forward Mode](fast-forward#per-rule-fast-forward) for what is bypassed.

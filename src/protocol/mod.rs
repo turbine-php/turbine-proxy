@@ -23,7 +23,9 @@ use crate::config::BackendConfig;
 /// Per-connection configuration passed to `DatabaseProtocol::accept_client`.
 pub struct ClientAuthConfig {
     pub connection_id: u32,
-    pub server_version: &'static str,
+    /// Server version string sent to the client during the protocol handshake.
+    /// Sourced from `ProxyConfig::server_version` / `PgsqlConfig::server_version`.
+    pub server_version: String,
 }
 
 // ─── Command ──────────────────────────────────────────────────────────────────

@@ -841,6 +841,9 @@ impl ConfigStore {
                 mirror_to: r.mirror_to,
                 destination_hostgroup: r.destination_hostgroup.map(|v| v as u32),
                 rollout_pct: r.rollout_pct.map(|v| v as u8),
+                qps_limit: None,
+                dry_run: false,
+                fast_forward: false,
             })
             .collect())
     }
@@ -895,6 +898,7 @@ impl ConfigStore {
                 resolution_family: "system".to_string(),
                 compression: crate::config::BackendCompression::None,
                 ssl_keylog_file: String::new(),
+                max_connections: None,
             };
             if row.role == "primary" {
                 primary = Some(cfg);

@@ -45,16 +45,16 @@ Client ──TLS──▶ TurbineProxy ──TLS──▶ Primary  (writes + tra
 | Category | Features |
 |----------|----------|
 | **Protocols** | MySQL 8.0+, MariaDB 10.6+, PostgreSQL 14+ |
-| **Routing** | Auto read/write split, query rules (regex/digest/user/schema), hostgroup pinning, weighted round-robin, backup replicas |
+| **Routing** | Auto read/write split, query rules (regex/digest/user/schema), per-rule fast-forward, hostgroup pinning, weighted round-robin, backup replicas |
 | **Consistency** | Time-based RYOW, GTID-aware RYOW, sticky connections for user variables and prepared statements |
-| **Pooling** | Per-backend pool, idle eviction, multiplexing, stmt_conn isolation from tx_conn |
+| **Pooling** | Per-backend pool, per-backend `max_connections` cap, idle eviction, multiplexing, stmt_conn isolation from tx_conn |
 | **Compression** | zlib (MySQL 5.7+), zstd (MySQL 8.0.18+) on backend connections |
-| **Performance** | Fast-forward mode (zero-overhead passthrough), result cache with TTL, query rewriting (LIMIT injection, timeout hints) |
+| **Performance** | Global & per-rule fast-forward mode (zero-overhead passthrough), per-rule QPS rate limiting (token bucket), result cache with TTL, query rewriting (LIMIT injection, timeout hints) |
 | **TLS** | Frontend TLS (client → proxy), backend TLS (proxy → DB), verify-identity for RDS/Cloud SQL, NSS Key Log for debugging |
 | **Security** | SQL injection protection (UNION, stacked queries, SLEEP, BENCHMARK, INTO OUTFILE, xp_cmdshell, hex evasion…), per-user rules, read-only enforcement, query allowlist, append-only audit log |
-| **HA** | Health checks, lag monitoring, automatic failover, Group Replication / InnoDB Cluster awareness, Galera check, PROXY Protocol v1, multi-node cluster config sync |
+| **HA** | Health checks, lag monitoring, automatic failover, Group Replication / InnoDB Cluster awareness, Galera check, PROXY Protocol v2 (HAProxy, AWS NLB), multi-node cluster config sync |
 | **Observability** | Prometheus metrics (11 metric families + histograms), Grafana dashboard JSON, query heatmap, N+1 detector, index advisor, slow query log, per-query tracer |
-| **Operations** | Zero-downtime reload (SIGHUP / dashboard), Helm chart, Docker (distroless), AUR / deb / Homebrew packages, systemd unit, logrotate config |
+| **Operations** | Per-port `server_version` string, zero-downtime reload (SIGHUP / dashboard), dry-run query rules, Helm chart, Docker (distroless), AUR / deb / Homebrew packages, systemd unit, logrotate config |
 | **AI / Automation** | Embedded MCP server (7 tools) for AI assistant integration |
 
 ---

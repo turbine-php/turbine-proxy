@@ -222,6 +222,16 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub fast_forward: bool,
 
+    /// Server version string advertised to MySQL clients during the handshake.
+    ///
+    /// This is the version string clients see via `SELECT VERSION()` or in their
+    /// connection info. Useful when running behind Aurora, Vitess, or a MySQL
+    /// 5.x → 8.x migration where tooling inspects the version at connect time.
+    ///
+    /// Default: `"8.0.36-TurbineProxy"`.
+    #[serde(default = "default_mysql_server_version")]
+    pub server_version: String,
+
     /// PostgreSQL proxy configuration.
     /// When `pgsql.enabled = true`, the proxy also listens on a PostgreSQL port
     /// and acts as a protocol-transparent proxy for PostgreSQL clients.
@@ -317,6 +327,9 @@ struct RawProxyConfig {
     #[serde(default)]
     pub fast_forward: bool,
 
+    #[serde(default = "default_mysql_server_version")]
+    pub server_version: String,
+
     #[serde(default)]
     pub pgsql: PgsqlConfig,
 }
@@ -387,6 +400,33 @@ pub struct QueryRuleConfig {
     /// Useful for canary traffic splitting (e.g. `rollout_pct = 10` sends
     /// 10 % of matching queries to `destination`).
     pub rollout_pct: Option<u8>,
+
+    /// Maximum queries per second allowed through this rule (token bucket).
+    /// Burst capacity equals 1 second worth of tokens.
+    /// Queries that exceed the rate receive an immediate error instead of
+    /// being queued. `null` or `0` = unlimited (default).
+    pub qps_limit: Option<u32>,
+
+    /// When `true`, log what this rule *would* do but do not apply it.
+    /// The query falls through to the next matching rule or the built-in
+    /// heuristic. Use this to validate new rules on live traffic before
+    /// committing them.
+    #[serde(default)]
+    pub dry_run: bool,
+
+    /// Fast-forward a matching query \u2014 bypass all routing, rewriting, caching,
+    /// analytics, and security checks for this specific query pattern.
+    ///
+    /// When `true`, the matched query is forwarded directly to the primary
+    /// backend using the same minimal code-path as the global `fast_forward`
+    /// option, but only for queries that match this rule. This is more surgical
+    /// than enabling global fast-forward.
+    ///
+    /// Useful when a specific hot query dominates the QPS and you want
+    /// sub-microsecond overhead for that pattern without disabling features
+    /// for all other queries.
+    #[serde(default)]
+    pub fast_forward: bool,
 }
 
 /// Compression mode for backend (proxy→database) connections.
@@ -522,6 +562,11 @@ pub struct BackendConfig {
     /// See `frontend_tls.ssl_keylog_file` for the client→proxy direction.
     #[serde(default)]
     pub ssl_keylog_file: String,
+
+    /// Maximum simultaneous connections TurbineProxy may open to this backend.
+    /// `null` = unlimited (default). Set this to protect the backend from
+    /// connection storms when the proxy receives a surge of client connections.
+    pub max_connections: Option<usize>,
 }
 
 /// Per-user proxy access configuration.
@@ -558,12 +603,15 @@ pub struct UserConfig {
     pub transaction_isolation: String,
 }
 
-/// PROXY Protocol v1 configuration.
+/// PROXY Protocol v1/v2 configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ProxyProtocolConfig {
-    /// Accept the PROXY Protocol v1 header from client connections.
+    /// Accept PROXY Protocol headers (v1 text or v2 binary) from client connections.
+    ///
     /// Enable this when the proxy sits behind HAProxy, AWS NLB, or any load
     /// balancer that sends PROXY headers so the real client IP is preserved.
+    /// Both formats are auto-detected: v1 (`PROXY TCP4 …\r\n`) and v2 (binary
+    /// signature `\r\n\r\n\x00\r\nQUIT\n`) are supported transparently.
     #[serde(default)]
     pub enabled: bool,
 }
@@ -847,6 +895,12 @@ fn default_shutdown_timeout_secs() -> u64 {
 fn default_client_error_window() -> u64 {
     60
 }
+fn default_mysql_server_version() -> String {
+    "8.0.36-TurbineProxy".to_string()
+}
+fn default_pgsql_server_version() -> String {
+    "16.0".to_string()
+}
 fn default_resolution_family() -> String {
     "system".to_string()
 }
@@ -966,6 +1020,13 @@ pub struct PgsqlConfig {
     /// Path to the PEM private key matching `ssl_cert`.
     #[serde(default)]
     pub ssl_key: String,
+
+    /// Server version string advertised to PostgreSQL clients during the
+    /// startup handshake (`server_version` parameter in `ParameterStatus`).
+    ///
+    /// Default: `"16.0"`.
+    #[serde(default = "default_pgsql_server_version")]
+    pub server_version: String,
 }
 
 impl ProxyConfig {
@@ -1076,6 +1137,7 @@ impl ProxyConfig {
             session_track_mode: raw.session_track_mode,
             gtid_aware_ryow: raw.gtid_aware_ryow,
             fast_forward: raw.fast_forward,
+            server_version: raw.server_version,
             pgsql: raw.pgsql,
         })
     }
@@ -1353,5 +1415,61 @@ password = "secret"
     fn test_backend_default_resolution_family() {
         let cfg = ProxyConfig::from_str(&minimal_toml("127.0.0.1:3306")).unwrap();
         assert_eq!(cfg.primary.resolution_family, "system");
+    }
+
+    // ── server_version ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_server_version_default_mysql() {
+        let cfg = ProxyConfig::from_str(&minimal_toml("127.0.0.1:3306")).unwrap();
+        assert_eq!(cfg.server_version, "8.0.36-TurbineProxy");
+    }
+
+    #[test]
+    fn test_server_version_custom_mysql() {
+        let toml = r#"
+server_version = "5.7.44-aurora"
+
+[primary]
+addr = "127.0.0.1:3306"
+user = "root"
+password = ""
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.server_version, "5.7.44-aurora");
+    }
+
+    #[test]
+    fn test_server_version_default_pgsql() {
+        // When [pgsql] is present but server_version is not set,
+        // the serde default kicks in.
+        let toml = r#"
+[primary]
+addr = "127.0.0.1:3306"
+user = "root"
+password = ""
+
+[pgsql]
+enabled = false
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.pgsql.server_version, "16.0");
+    }
+
+    #[test]
+    fn test_server_version_custom_pgsql() {
+        let toml = r#"
+[primary]
+addr = "127.0.0.1:5432"
+user = "postgres"
+password = ""
+
+[pgsql]
+enabled = true
+listen_addr = "0.0.0.0:5432"
+server_version = "15.4-aurora"
+"#;
+        let cfg = ProxyConfig::from_str(toml).unwrap();
+        assert_eq!(cfg.pgsql.server_version, "15.4-aurora");
     }
 }

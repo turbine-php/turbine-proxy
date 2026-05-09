@@ -202,6 +202,17 @@ impl Router {
 
     /// Route a COM_QUERY to the correct backend and return the buffered response.
     ///
+    /// Returns `true` when the **first matching rule** for this query has
+    /// `fast_forward = true`. Used by `handle_connection` to bypass the full
+    /// routing / analytics pipeline for specific hot-path query patterns.
+    pub async fn is_fast_forward_rule(&self, sql: &str, user: &str, schema: &str) -> bool {
+        self.rules
+            .match_query(sql, user, schema)
+            .await
+            .map(|m| m.fast_forward)
+            .unwrap_or(false)
+    }
+
     /// Routing order:
     /// 1. Active transaction      → sticky primary, cache bypassed, no retry
     /// 2. Query rules             → explicit `destination` overrides heuristic
@@ -394,6 +405,15 @@ impl Router {
         // ── Step 2: explicit query rules ──────────────────────────────────────
         // Rules override the heuristic. `Destination::Any` falls through.
         let rule_match = self.rules.match_query(effective_sql, user, schema).await;
+
+        // Rate-limit: fail fast before allocating any backend connection.
+        if let Some(ref m) = rule_match {
+            if m.rate_limited {
+                return Err(anyhow::anyhow!(
+                    "Too many requests: query rate limit exceeded"
+                ));
+            }
+        }
 
         // Hostgroup routing — bypass the replica/primary path entirely.
         if let Some(ref m) = rule_match {
@@ -590,7 +610,52 @@ impl Router {
             .await;
     }
 
-    /// Pass a raw command packet through to the primary backend.
+    // ─── Sticky-hint routing ──────────────────────────────────────────────────
+
+    /// Execute `sql` on a per-session sticky replica connection.
+    ///
+    /// On the first call the router acquires a replica (falling back to
+    /// primary when no replica is available) and stores both the connection
+    /// and its pool index in `sticky_conn` / `sticky_idx`.  Subsequent calls
+    /// reuse the same backend for read consistency within the hint window.
+    ///
+    /// Returns the backend response, or an error if the query fails.
+    /// The caller must eventually call [`put_replica`] to return the
+    /// connection to the pool and avoid leaking the `borrowed` counter.
+    pub async fn route_sticky_query(
+        &self,
+        sql: &[u8],
+        sticky_conn: &mut Option<Box<dyn BackendConnection>>,
+        sticky_idx: &mut usize,
+    ) -> anyhow::Result<BackendResponse> {
+        if sticky_conn.is_none() {
+            let pool = self.pool.read().await;
+            let (conn, idx) = pool.get_replica_for_database(None).await?;
+            *sticky_conn = Some(conn);
+            *sticky_idx = idx;
+            log::debug!("[sticky] acquired backend (replica_idx={})", idx);
+        }
+        sticky_conn
+            .as_mut()
+            .unwrap()
+            .execute_query(sql)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
+    /// Return a sticky replica connection to the appropriate pool.
+    ///
+    /// When `idx == usize::MAX` the connection is returned to the primary
+    /// pool (it was acquired via fallback when no replica was available).
+    pub async fn put_replica(&self, conn: Box<dyn BackendConnection>, idx: usize) {
+        let pool = self.pool.read().await;
+        if idx == usize::MAX {
+            pool.put_primary_for_database(conn, None).await;
+        } else {
+            pool.put_replica_for_database(conn, idx, None).await;
+        }
+    }
+
     ///
     /// Used for COM_INIT_DB and any non-query, non-stmt command that must
     /// always go to the primary.

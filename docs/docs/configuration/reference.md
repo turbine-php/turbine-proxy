@@ -144,6 +144,7 @@ listen_addr = "0.0.0.0:3307"
 |-----|------|---------|-------------|
 | `enabled` | bool | `false` | Start the MySQL proxy listener |
 | `listen_addr` | string | `"0.0.0.0:3307"` | TCP address for the MySQL listener |
+| `server_version` | string | `"8.0.36-TurbineProxy"` | Version string sent to clients in the initial handshake. Override when frameworks or ORMs require a specific version (e.g. `"5.7.44-aurora"`) |
 
 ---
 
@@ -179,6 +180,7 @@ ssl_key                    = ""
 | `primary_failover_threshold` | int | `3` | Consecutive failed health checks before promoting a replica |
 | `ssl_cert` | string | `""` | Path to PEM certificate for client→proxy TLS |
 | `ssl_key` | string | `""` | Path to PEM private key for client→proxy TLS |
+| `server_version` | string | `"16.0"` | PostgreSQL version string sent to clients at startup. Override when migrating to/from Aurora, Cloud SQL, etc. (e.g. `"15.4-aurora"`) |
 
 Backend, replica, and user overrides follow the same pattern as `[shared]`:
 
@@ -244,6 +246,9 @@ destination_hostgroup = -1
 cache_ttl_secs       = 0
 mirror_to            = -1
 rollout_pct          = 100
+dry_run              = false
+qps_limit            = 0
+fast_forward         = false
 comment              = ""
 ```
 
@@ -258,6 +263,9 @@ comment              = ""
 | `cache_ttl_secs` | int | `0` | Cache query result for this many seconds. `0` = disabled |
 | `mirror_to` | int | `-1` | Fire-and-forget shadow copy to another hostgroup. `-1` = disabled |
 | `rollout_pct` | int | `100` | Percentage of matching traffic to apply this rule (1–100). For canary rollouts |
+| `dry_run` | bool | `false` | Log the match but skip routing — the query falls through to the next rule or the default heuristic. Use for safely testing new rules in production |
+| `qps_limit` | int | `0` | Maximum queries per second for this rule (token bucket). Excess queries are rejected immediately with an error. `0` = unlimited |
+| `fast_forward` | bool | `false` | Bypass the full routing, analytics, and security pipeline for matching queries. More surgical than the global `fast_forward` listener option |
 | `comment` | string | `""` | Human-readable description shown in the dashboard |
 
 **Examples:**
