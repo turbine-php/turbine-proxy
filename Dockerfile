@@ -7,7 +7,7 @@ COPY dashboard/ ./
 RUN npm run build
 
 # ─── Stage 2: Build binary (musl static) ──────────────────────────────────────
-FROM rust:1.82-bookworm AS rust-builder
+FROM rust:1.85-bookworm AS rust-builder
 
 # Tools needed: musl-gcc (for SQLite bundled + mimalloc C build), cmake
 RUN apt-get update && apt-get install -y --no-install-recommends \

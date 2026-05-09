@@ -89,7 +89,7 @@ section = "net"
 priority = "optional"
 assets = [
   # Binary
-  ["target/x86_64-unknown-linux-musl/release/turbineproxy", "usr/bin/", "755"],
+  ["target/release/turbineproxy", "usr/bin/", "755"],
   # Dashboard assets
   ["dashboard/dist/", "usr/share/turbineproxy/dashboard/dist/", "644"],
   # Example config
@@ -108,8 +108,8 @@ name = "turbineproxy"
 summary = "Intelligent MySQL proxy with analytics and Prometheus metrics"
 license = "Apache-2.0"
 assets = [
-  { source = "target/x86_64-unknown-linux-musl/release/turbineproxy", dest = "/usr/bin/turbineproxy", mode = "0755" },
-  { source = "dashboard/dist/", dest = "/usr/share/turbineproxy/dashboard/dist/", mode = "0644" },
+  { source = "target/release/turbineproxy", dest = "/usr/bin/turbineproxy", mode = "0755" },
+  { source = "dashboard/dist/**/*", dest = "/usr/share/turbineproxy/dashboard/dist/", mode = "0644", glob = true },
   { source = "turbineproxy.example.toml", dest = "/etc/turbineproxy/turbineproxy.example.toml", mode = "0644", config = true },
   { source = "pkg/systemd/turbineproxy.service", dest = "/lib/systemd/system/turbineproxy.service", mode = "0644" },
   { source = "pkg/logrotate/turbineproxy", dest = "/etc/logrotate.d/turbineproxy", mode = "0644" },
