@@ -54,7 +54,7 @@ TOML, and writes a ready-to-run config file.
 ## Building from Source
 
 ```bash
-git clone https://github.com/turbineproxy/turbineproxy.git
+git clone https://github.com/turbine-php/turbine-proxy.git
 cd turbineproxy
 cargo build --release
 ```

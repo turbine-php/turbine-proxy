@@ -60,7 +60,7 @@ const config = {
       ({
         docs: {
           sidebarPath: './sidebars.js',
-          editUrl: 'https://github.com/turbineproxy/turbineproxy/tree/main/docs/',
+          editUrl: 'https://github.com/turbine-php/turbine-proxy/tree/main/docs/',
           showLastUpdateTime: true,
           showLastUpdateAuthor: false,
         },
@@ -104,7 +104,7 @@ const config = {
             position: 'right',
           },
           {
-            href: 'https://github.com/turbineproxy/turbineproxy',
+            href: 'https://github.com/turbine-php/turbine-proxy',
             label: 'GitHub',
             position: 'right',
           },
@@ -133,7 +133,7 @@ const config = {
           {
             title: 'Community',
             items: [
-              { label: 'GitHub', href: 'https://github.com/turbineproxy/turbineproxy' },
+              { label: 'GitHub', href: 'https://github.com/turbine-php/turbine-proxy' },
             ],
           },
         ],
