@@ -80,6 +80,53 @@ const sidebars = {
         'deployment/ha-setup',
       ],
     },
+    {
+      type: 'category',
+      label: 'Tutorials',
+      collapsed: false,
+      items: [
+        {
+          type: 'category',
+          label: '🟢 Beginner',
+          items: [
+            'tutorials/what-is-a-database-proxy',
+            'tutorials/install-and-run',
+            'tutorials/connect-your-app',
+            'tutorials/explore-the-dashboard',
+          ],
+        },
+        {
+          type: 'category',
+          label: '🟡 Intermediate',
+          items: [
+            'tutorials/read-write-splitting',
+            'tutorials/connection-pooling-tuning',
+            'tutorials/query-rewriting',
+            'tutorials/rate-limiting-and-routing',
+          ],
+        },
+        {
+          type: 'category',
+          label: '🔴 Advanced',
+          items: [
+            'tutorials/high-availability',
+            'tutorials/secrets-encryption',
+            'tutorials/prometheus-grafana',
+            'tutorials/kubernetes-helm',
+          ],
+        },
+        {
+          type: 'category',
+          label: '⚡ How-To',
+          items: [
+            'tutorials/howto-sql-injection-protection',
+            'tutorials/howto-query-rules-dry-run',
+            'tutorials/howto-hot-reload',
+            'tutorials/howto-migrate-from-proxysql',
+          ],
+        },
+      ],
+    },
   ],
 };
 
