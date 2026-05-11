@@ -63,10 +63,12 @@ Both tools solve the same class of problems. Key differences:
 | Feature | TurbineProxy | ProxySQL |
 |---|---|---|
 | Language | Rust | C++ |
-| PostgreSQL support | ✓ | ✗ (MySQL only) |
+| PostgreSQL support | ✓ | Partial (added in v2.x, experimental) |
 | Built-in dashboard | ✓ | ✗ (needs external tools) |
 | Prometheus metrics | ✓ | via exporter |
-| Configuration | TOML file | MySQL-style CLI |
+| SQL injection protection | ✓ (dedicated module) | via query rules (manual patterns) |
+| Credential encryption | ✓ (AES-256-GCM, `enc:` prefix) | ✗ (plaintext in SQLite) |
+| Configuration | TOML file | MySQL-style CLI (admin port 6032) |
 | Binary size | ~12 MB | ~50 MB |
 | License | Apache-2.0 | GPL-3.0 |
 
