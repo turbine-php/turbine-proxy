@@ -123,6 +123,7 @@ const sidebars = {
             'tutorials/howto-query-rules-dry-run',
             'tutorials/howto-hot-reload',
             'tutorials/howto-migrate-from-proxysql',
+            'tutorials/howto-stored-procedures',
           ],
         },
       ],
