@@ -16,9 +16,40 @@ sidebar_position: 17
 
 Because a `CALL` could do anything — reads, writes, or both — TurbineProxy routes all calls to the primary unless you tell it otherwise.
 
+## Creating a Query Rule — Dashboard or TOML
+
+You can create query rules in two ways:
+
+### Option 1: Dashboard (recommended for quick iteration)
+
+Open the dashboard at `http://localhost:8080`, go to **Query Rules** and click **Add Rule**. Fill in:
+
+| Field | Value |
+|---|---|
+| Match Pattern | `(?i)CALL\s+proc_relatorio` |
+| Destination | `replica` |
+| Comment | `proc_relatorio is read-only` |
+
+Click **Save** and the rule is active immediately — no file edit or reload needed. The dashboard also shows a **matches** counter per rule so you can confirm it's firing.
+
+### Option 2: TOML config
+
+Add the rule to `turbineproxy.toml` and reload:
+
+```toml
+[[query_rules]]
+match_pattern = "(?i)CALL\\s+proc_relatorio"
+destination   = "replica"
+comment       = "proc_relatorio is read-only — route to replica"
+```
+
+```bash
+curl -X POST http://localhost:8080/api/reload
+```
+
 ## Routing a Read-Only Procedure to a Replica
 
-If you know a procedure only runs `SELECT` statements, you can override the default with a query rule:
+If you know a procedure only runs `SELECT` statements, create a rule (via dashboard or TOML) pointing it to a replica:
 
 ```toml
 [[query_rules]]
@@ -61,7 +92,11 @@ If a procedure starts read-only but is later modified to include writes, you don
 
 ## Testing Before Enabling
 
-Use `dry_run = true` first to confirm the rule matches the right procedures and nothing else:
+Before routing to a replica in production, enable `dry_run` first. The rule will match and count hits but won't change routing:
+
+**Via dashboard:** add the rule with the **Dry Run** checkbox ticked. The **Query Rules** table shows a live **matches** counter per rule — watch it grow as procedures are called. When you're satisfied only the right procedures are matching, untick **Dry Run** and save.
+
+**Via TOML:**
 
 ```toml
 [[query_rules]]
@@ -71,11 +106,11 @@ dry_run       = true
 comment       = "DRY RUN: verify proc_relatorio routing"
 ```
 
-Apply and check the dashboard **Queries** tab. If only the expected procedure shows as matched, remove `dry_run = true` and reload.
-
 ```bash
 curl -X POST http://localhost:8080/api/reload
 ```
+
+Check the dashboard **Query Rules** tab for the matches counter. Once confirmed, remove `dry_run = true` and reload again.
 
 ## Summary
 
