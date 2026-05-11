@@ -159,7 +159,7 @@ The docs MCP server is **hosted publicly** — no installation required. Just ad
   "servers": {
     "turbineproxy-docs": {
       "type": "http",
-      "url": "https://turbineproxy.dev/mcp"
+      "url": "https://mcp.turbineproxy.com/mcp"
     }
   }
 }
@@ -171,7 +171,7 @@ The docs MCP server is **hosted publicly** — no installation required. Just ad
 {
   "mcpServers": {
     "turbineproxy-docs": {
-      "url": "https://turbineproxy.dev/mcp"
+      "url": "https://mcp.turbineproxy.com/mcp"
     }
   }
 }
@@ -185,7 +185,7 @@ The docs MCP server is **hosted publicly** — no installation required. Just ad
     "servers": {
       "turbineproxy-docs": {
         "type": "http",
-        "url": "https://turbineproxy.dev/mcp"
+        "url": "https://mcp.turbineproxy.com/mcp"
       }
     }
   }
