@@ -148,32 +148,9 @@ Once connected, ask your assistant:
 
 ## Docs MCP (Documentation Server)
 
-The docs MCP server indexes the TurbineProxy documentation and exposes search and lookup tools. It is useful for AI-assisted config authoring without needing a running proxy.
+The docs MCP server is **hosted publicly** — no installation required. Just add the URL to your AI assistant and start asking questions about TurbineProxy configuration, features, and query rules.
 
-### Running
-
-```bash
-cd docs
-npm install
-npm run mcp
-# Listening on http://localhost:3333
-```
-
-Configure port and optional live proxy connection:
-
-```bash
-MCP_PORT=4000 TURBINEPROXY_API=http://localhost:8080 npm run mcp
-```
-
-By default, links returned by `search_docs` and `get_config_option` point to `https://docs.turbineproxy.com/docs`. Override with `TURBINEPROXY_DOCS_URL` if you host your own docs mirror:
-
-```bash
-TURBINEPROXY_DOCS_URL=https://my-internal-docs/turbineproxy npm run mcp
-```
-
-When `TURBINEPROXY_API` is set, the docs MCP also proxies `get_slow_queries`, `get_backends`, and `get_live_stats` to the running proxy.
-
-### Connecting
+### Connect (no installation required)
 
 **VS Code `mcp.json`:**
 
@@ -182,26 +159,54 @@ When `TURBINEPROXY_API` is set, the docs MCP also proxies `get_slow_queries`, `g
   "servers": {
     "turbineproxy-docs": {
       "type": "http",
-      "url": "http://localhost:3333/mcp"
+      "url": "https://turbineproxy.dev/mcp"
     }
   }
 }
 ```
 
-**Claude Desktop:**
+**Claude Desktop (`claude_desktop_config.json`):**
 
 ```json
 {
   "mcpServers": {
     "turbineproxy-docs": {
-      "command": "node",
-      "args": ["/path/to/turbineproxy/docs/mcp-server/index.js"],
-      "env": {
-        "TURBINEPROXY_API": "http://localhost:8080"
+      "url": "https://turbineproxy.dev/mcp"
+    }
+  }
+}
+```
+
+**VS Code `settings.json`:**
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "turbineproxy-docs": {
+        "type": "http",
+        "url": "https://turbineproxy.dev/mcp"
       }
     }
   }
 }
+```
+
+### Running Locally (Optional)
+
+Only needed if you want to connect the docs MCP to a **live TurbineProxy instance** for real-time metrics:
+
+```bash
+cd docs/mcp-server
+npm install
+TURBINEPROXY_API=http://localhost:8080 node index.js
+# Listening on http://localhost:3333/mcp
+```
+
+Override the docs URL in results if you host your own mirror:
+
+```bash
+TURBINEPROXY_DOCS_URL=https://my-internal-docs/turbineproxy node index.js
 ```
 
 ### Available Tools
