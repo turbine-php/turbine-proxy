@@ -454,6 +454,20 @@ const httpServer = http.createServer(async (req, res) => {
   } else if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ status: 'ok', server: 'turbineproxy-mcp' }))
+  } else if (req.url === '/' || req.url === '') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    res.end(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>TurbineProxy MCP Server</title></head>
+<body style="font-family:sans-serif;max-width:480px;margin:60px auto;padding:0 16px">
+  <h1>TurbineProxy MCP Server</h1>
+  <p>MCP endpoint: <code>/mcp</code></p>
+  <p>
+    <a href="https://turbineproxy.com">turbineproxy.com</a> &middot;
+    <a href="https://docs.turbineproxy.com">Documentation</a>
+  </p>
+</body>
+</html>`)
   } else {
     res.writeHead(404)
     res.end('Not found. MCP endpoint is at /mcp')
