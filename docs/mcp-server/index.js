@@ -8,9 +8,10 @@
  *   node index.js
  *
  * Environment variables:
- *   MCP_PORT            - HTTP port (default: 3333)
- *   TURBINEPROXY_API    - TurbineProxy API base URL (default: http://localhost:8080)
- *   TURBINEPROXY_TOKEN  - X-Auth-Token for authenticated dashboards
+ *   MCP_PORT              - HTTP port (default: 3333)
+ *   TURBINEPROXY_API      - TurbineProxy API base URL (default: http://localhost:8080)
+ *   TURBINEPROXY_TOKEN    - X-Auth-Token for authenticated dashboards
+ *   TURBINEPROXY_DOCS_URL - Docs base URL for search result links (default: https://docs.turbineproxy.com/docs)
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -21,6 +22,7 @@ import http from 'node:http'
 const MCP_PORT = Number(process.env.MCP_PORT ?? 3333)
 const API_BASE = (process.env.TURBINEPROXY_API ?? 'http://localhost:8080').replace(/\/$/, '')
 const API_TOKEN = process.env.TURBINEPROXY_TOKEN ?? ''
+const DOCS_BASE = (process.env.TURBINEPROXY_DOCS_URL ?? 'https://docs.turbineproxy.com/docs').replace(/\/$/, '')
 
 // ---------------------------------------------------------------------------
 // Documentation knowledge base
@@ -314,21 +316,21 @@ server.tool(
         doc.description.toLowerCase().includes(q) ||
         doc.section.toLowerCase().includes(q)
       ) {
-        results.push(`**Config: \`${key}\`** (section: ${doc.section})\n${doc.description}\nDefault: \`${doc.default}\`\nExample:\n\`\`\`toml\n${doc.example}\n\`\`\``)
+        results.push(`**Config: \`${key}\`** (section: ${doc.section})\n${doc.description}\nDefault: \`${doc.default}\`\nExample:\n\`\`\`toml\n${doc.example}\n\`\`\`\nDocs: ${DOCS_BASE}/configuration/reference`)
       }
     }
 
     // Search features
     for (const [feature, desc] of Object.entries(FEATURES_DOCS)) {
       if (feature.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) {
-        results.push(`**Feature: ${feature}**\n${desc}`)
+        results.push(`**Feature: ${feature}**\n${desc}\nDocs: ${DOCS_BASE}/features/${feature}`)
       }
     }
 
     // Search sections
     for (const [section, desc] of Object.entries(SECTION_DOCS)) {
       if (section.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) {
-        results.push(`**Section: [${section}]**\n${desc}`)
+        results.push(`**Section: [${section}]**\n${desc}\nDocs: ${DOCS_BASE}/configuration/reference`)
       }
     }
 
@@ -360,7 +362,7 @@ server.tool(
     return {
       content: [{
         type: 'text',
-        text: `## \`${key}\`\n\n**Section:** ${doc.section}\n**Type:** ${doc.type}\n**Default:** \`${doc.default}\`\n\n${doc.description}\n\n**Example:**\n\`\`\`toml\n${doc.example}\n\`\`\``,
+        text: `## \`${key}\`\n\n**Section:** ${doc.section}\n**Type:** ${doc.type}\n**Default:** \`${doc.default}\`\n\n${doc.description}\n\n**Example:**\n\`\`\`toml\n${doc.example}\n\`\`\`\n\n**Docs:** ${DOCS_BASE}/configuration/reference`,
       }],
     }
   },

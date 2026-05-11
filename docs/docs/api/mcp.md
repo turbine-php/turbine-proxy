@@ -165,6 +165,12 @@ Configure port and optional live proxy connection:
 MCP_PORT=4000 TURBINEPROXY_API=http://localhost:8080 npm run mcp
 ```
 
+By default, links returned by `search_docs` and `get_config_option` point to `https://docs.turbineproxy.com/docs`. Override with `TURBINEPROXY_DOCS_URL` if you host your own docs mirror:
+
+```bash
+TURBINEPROXY_DOCS_URL=https://my-internal-docs/turbineproxy npm run mcp
+```
+
 When `TURBINEPROXY_API` is set, the docs MCP also proxies `get_slow_queries`, `get_backends`, and `get_live_stats` to the running proxy.
 
 ### Connecting
