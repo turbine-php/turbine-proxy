@@ -26,6 +26,10 @@ md5 = "0.7"
 base64 = "0.22"
 rand = "0.9"
 aes-gcm = "0.10"
+subtle = "2"
+
+# OS keyring support (optional — enable with --features keyring-support)
+keyring = { version = "3", optional = true }
 
 # Compression (MySQL protocol)
 flate2 = "1"
@@ -74,6 +78,12 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 [[bench]]
 name = "proxy_bench"
 harness = false
+
+[features]
+# Enable OS keyring (Keychain on macOS, libsecret/kwallet on Linux) as an
+# additional source for TURBINEPROXY_SECRET_KEY. Falls back to env var if
+# no entry is found in the keyring.
+keyring-support = ["dep:keyring"]
 
 # ── Debian package metadata (cargo-deb) ──────────────────────────────────────
 [package.metadata.deb]

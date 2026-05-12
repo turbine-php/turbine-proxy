@@ -61,11 +61,49 @@ TurbineProxy reads the file and trims whitespace. Works well with:
 Passwords entered or saved through the **dashboard** are stored in SQLite.
 Set `TURBINEPROXY_SECRET_KEY` to encrypt them before they are written.
 
+### Threat model
+
+This protects against **offline file theft** — a stolen SQLite backup or disk
+image cannot be used to extract credentials without the key.
+
+It does **not** protect against a fully compromised host. If an attacker
+controls the running process they can read the decrypted key from memory or
+from environment variables. For that level of threat, use a hardware security
+module (HSM) or an external secret manager (Vault, AWS Secrets Manager).
+
+### Key sources (priority order)
+
+TurbineProxy tries the following sources in order and uses the first valid key found:
+
+1. **OS keyring** *(requires build flag `--features keyring-support`)*  
+   The key is stored in the platform's native secret store — Keychain on macOS,
+   libsecret / kwallet on Linux. An attacker who copies the SQLite file or reads
+   the filesystem cannot retrieve the key without also having active access to
+   the logged-in user session.
+
+   ```bash
+   # Store the key in the OS keyring (one-time setup)
+   keyring set turbineproxy encryption-key $(openssl rand -hex 32)
+   ```
+
+   Build with keyring support:
+
+   ```bash
+   cargo build --release --features keyring-support
+   ```
+
+2. **`TURBINEPROXY_SECRET_KEY` environment variable**  
+   The default and most portable option.
+
+   ```bash
+   export TURBINEPROXY_SECRET_KEY=$(openssl rand -hex 32)
+   ```
+
 ### Generating a key
 
 ```bash
 # 64 hex characters = 32 bytes = 256-bit key
-export TURBINEPROXY_SECRET_KEY=$(openssl rand -hex 32)
+openssl rand -hex 32
 ```
 
 Persist the variable in your process manager:
@@ -117,7 +155,7 @@ plain-text        →   returned as-is         →   plaintext password
 
 1. Decrypt all `enc:` values using the old key (read from DB, call `decrypt`).
 2. Re-encrypt with the new key.
-3. Update the environment variable.
+3. Update the environment variable (or keyring entry).
 
 There is no built-in rotation command yet — a utility script will be provided in a future release.
 

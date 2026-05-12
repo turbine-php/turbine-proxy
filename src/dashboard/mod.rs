@@ -19,6 +19,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use sha2::{Digest, Sha256};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
@@ -41,6 +42,17 @@ use crate::proxy::user_registry::UserRegistry;
 
 /// In-memory set of valid session tokens.
 pub type TokenStore = Arc<Mutex<HashSet<String>>>;
+
+/// Hash a raw session token with SHA-256 before storing in memory.
+/// A memory dump of the process will not yield usable session tokens.
+pub(super) fn token_hash(raw: &str) -> String {
+    let hash = Sha256::digest(raw.as_bytes());
+    hash.iter().fold(String::with_capacity(64), |mut s, b| {
+        use std::fmt::Write;
+        let _ = write!(s, "{:02x}", b);
+        s
+    })
+}
 
 /// Shared application state injected into every handler.
 #[derive(Clone)]
@@ -224,9 +236,10 @@ async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
+    let hashed = token_hash(token);
     let valid = {
         let store = state.tokens.lock().unwrap();
-        store.contains(token)
+        store.contains(&hashed)
     };
 
     if valid {

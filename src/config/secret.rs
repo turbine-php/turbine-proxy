@@ -34,10 +34,56 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 /// Prefix that marks an AES-256-GCM encrypted value in the store.
 pub const ENC_PREFIX: &str = "enc:";
 
-/// Read and validate `TURBINEPROXY_SECRET_KEY`.
+/// Load the encryption key, trying sources in order:
 ///
-/// Returns `None` if the variable is not set or is invalid (with a log warning).
+/// 1. **OS keyring** (if compiled with `--features keyring-support`) —
+///    service `"turbineproxy"`, account `"encryption-key"`.
+///    Store a key with: `keyring set turbineproxy encryption-key <hex>`
+///    or via the `keyring` CLI / your platform's secret manager.
+/// 2. **`TURBINEPROXY_SECRET_KEY`** environment variable (64 hex chars).
+///
+/// Returns `None` if no key is configured from either source.
 pub fn load_encryption_key() -> Option<[u8; 32]> {
+    // ── 1. OS keyring (optional feature) ────────────────────────────────────
+    #[cfg(feature = "keyring-support")]
+    {
+        match keyring::Entry::new("turbineproxy", "encryption-key") {
+            Ok(entry) => match entry.get_password() {
+                Ok(hex) => {
+                    if let Some(key) = parse_hex_key(&hex) {
+                        log::debug!("[secret] Loaded encryption key from OS keyring");
+                        return Some(key);
+                    }
+                    log::warn!(
+                        "[secret] OS keyring entry exists but key is invalid; \
+                         falling back to TURBINEPROXY_SECRET_KEY"
+                    );
+                }
+                Err(keyring::Error::NoEntry) => {
+                    log::debug!(
+                        "[secret] No key stored in OS keyring; \
+                         trying TURBINEPROXY_SECRET_KEY"
+                    );
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[secret] OS keyring error: {}; \
+                         falling back to TURBINEPROXY_SECRET_KEY",
+                        e
+                    );
+                }
+            },
+            Err(e) => {
+                log::warn!(
+                    "[secret] Cannot open OS keyring entry: {}; \
+                     falling back to TURBINEPROXY_SECRET_KEY",
+                    e
+                );
+            }
+        }
+    }
+
+    // ── 2. Environment variable ──────────────────────────────────────────────
     let hex = match std::env::var("TURBINEPROXY_SECRET_KEY") {
         Ok(v) => v,
         Err(_) => return None,

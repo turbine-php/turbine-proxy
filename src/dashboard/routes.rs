@@ -8,9 +8,11 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use super::AppState;
+use super::{token_hash, AppState};
 
 #[derive(Deserialize)]
 pub struct ProtocolQuery {
@@ -49,6 +51,14 @@ fn resolve_protocol(state: &AppState, raw: Option<&str>) -> Option<&'static str>
 
 // ── /api/login ───────────────────────────────────────────────────────────────
 
+/// Compare two strings in constant time (via SHA-256 hashing to equalise
+/// length before the comparison). Prevents timing-based credential leaks.
+fn ct_eq_str(a: &str, b: &str) -> bool {
+    let ha = Sha256::digest(a.as_bytes());
+    let hb = Sha256::digest(b.as_bytes());
+    ha.as_slice().ct_eq(hb.as_slice()).into()
+}
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     pub username: String,
@@ -69,7 +79,7 @@ pub async fn login(
     // If no credentials configured, auth is open — return a dummy token
     if state.dashboard_username.is_empty() || state.dashboard_password.is_empty() {
         let token = Uuid::new_v4().to_string();
-        state.tokens.lock().unwrap().insert(token.clone());
+        state.tokens.lock().unwrap().insert(token_hash(&token));
         return (
             StatusCode::OK,
             Json(LoginResponse {
@@ -80,9 +90,11 @@ pub async fn login(
         );
     }
 
-    if body.username == state.dashboard_username && body.password == state.dashboard_password {
+    if ct_eq_str(&body.username, &state.dashboard_username)
+        && ct_eq_str(&body.password, &state.dashboard_password)
+    {
         let token = Uuid::new_v4().to_string();
-        state.tokens.lock().unwrap().insert(token.clone());
+        state.tokens.lock().unwrap().insert(token_hash(&token));
         (
             StatusCode::OK,
             Json(LoginResponse {
@@ -114,7 +126,11 @@ pub async fn logout(
     State(state): State<AppState>,
     Json(body): Json<LogoutRequest>,
 ) -> Json<serde_json::Value> {
-    state.tokens.lock().unwrap().remove(&body.token);
+    state
+        .tokens
+        .lock()
+        .unwrap()
+        .remove(&token_hash(&body.token));
     Json(serde_json::json!({ "ok": true }))
 }
 

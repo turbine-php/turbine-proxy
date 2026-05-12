@@ -186,6 +186,8 @@ Blocked queries return a MySQL/PostgreSQL error packet to the client and increme
 sql_injection_protection = true
 ```
 
+> **Threat model:** This is defense in depth, not a replacement for parameterized queries. It stops script-kiddie scanners and misconfigured apps. It does not prevent a determined attacker from crafting a payload that evades pattern matching. Use the query allowlist below for a stronger guarantee.
+
 ### Per-User Access Control
 
 ```toml
@@ -236,6 +238,8 @@ ssl_keylog_file = "/tmp/sslkeys.log"   # debug only
 
 - Passwords in `turbineproxy.toml` are never logged.
 - Dashboard credentials are separate from database credentials.
+- Dashboard login uses **constant-time comparison** (via `subtle`) to prevent timing-based attacks.
+- Session tokens are stored as **SHA-256 hashes** in memory — a process memory dump does not yield usable tokens.
 - SHA-1 and SHA-256 auth tokens are pre-computed at startup and cached (`auth_cache_ttl_secs`). Plaintext passwords are not held in memory after the cache is warm.
 
 #### External Secret References
@@ -260,6 +264,14 @@ export TURBINEPROXY_SECRET_KEY=$(openssl rand -hex 32)
 ```
 
 Encrypted values are stored as `enc:<base64url(nonce || ciphertext)>` and are transparently decrypted at runtime. Existing plaintext values and `env:`/`file:` references continue to work without any migration.
+
+**Threat model:** Protects against offline file theft (stolen backup, snapshot). Does not protect against a compromised host — the key and the data live on the same machine. For stronger isolation, build with `--features keyring-support` to store the key in the OS keyring (Keychain on macOS, libsecret on Linux) instead of an environment variable.
+
+```bash
+# Store key in OS keyring (requires --features keyring-support build)
+keyring set turbineproxy encryption-key $(openssl rand -hex 32)
+cargo build --release --features keyring-support
+```
 
 See [Secret Management](https://docs.turbineproxy.com/docs/features/secret-management) for the full guide.
 

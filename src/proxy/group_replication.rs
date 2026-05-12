@@ -65,6 +65,7 @@ impl GrChecker {
         let all_configs: Vec<&BackendConfig> = std::iter::once(&self.primary_config)
             .chain(self.replica_configs.iter())
             .collect();
+        let backend_count = all_configs.len();
 
         for config in all_configs {
             match self.query_gr_members(config).await {
@@ -75,7 +76,11 @@ impl GrChecker {
                 Err(_) => continue,
             }
         }
-        // All backends unreachable — leave current GR state unchanged.
+        // All backends unreachable — GR routing state is frozen at last known value.
+        log::warn!(
+            "[GR] all {} backend(s) unreachable during poll — GR primary discovery stalled, routing unchanged",
+            backend_count
+        );
     }
 
     async fn query_gr_members(&self, config: &BackendConfig) -> anyhow::Result<Vec<GrMember>> {

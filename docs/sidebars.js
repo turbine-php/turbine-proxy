@@ -35,6 +35,7 @@ const sidebars = {
         'features/grafana-integration',
         'features/cluster-sync',
         'features/audit-log',
+        'features/failure-modes',
       ],
     },
     {

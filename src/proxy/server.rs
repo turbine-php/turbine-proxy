@@ -589,6 +589,9 @@ async fn handle_connection(
     let mut sticky_hint_idx: usize = usize::MAX;
     let mut sticky_hint_active = false;
     let mut error_window_start: Option<Instant> = None;
+    // Warn once per session when a write query is routed through the failover
+    // backend (primary is down).  Reset to false if failover clears.
+    let mut warned_failover_write = false;
 
     // ── Per-user session initialisation ────────────────────────────────────────
     // Look up user config for: max_connections check, default_schema injection,
@@ -933,6 +936,18 @@ async fn handle_connection(
                     metrics.queries_read.fetch_add(1, Ordering::Relaxed);
                 } else if matches!(intent, QueryIntent::Write) {
                     metrics.queries_write.fetch_add(1, Ordering::Relaxed);
+                    // Warn once per session if this write will land on a failover
+                    // replica because the configured primary is unreachable.
+                    if !warned_failover_write && router.failover_active_nowait() {
+                        warned_failover_write = true;
+                        log::warn!(
+                            "[HA conn {}] write query routed through failover backend — configured primary is down",
+                            conn_id
+                        );
+                    } else if warned_failover_write && !router.failover_active_nowait() {
+                        // Primary recovered during this session — reset so we warn again if it fails again.
+                        warned_failover_write = false;
+                    }
                 }
 
                 // Enforce per-user write restrictions before routing.

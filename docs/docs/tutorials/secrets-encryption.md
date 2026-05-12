@@ -36,6 +36,12 @@ The file must contain exactly the secret value (one line, no newline, or Turbine
 
 For environments where environment variable injection is not possible and you need to store the config file alongside encrypted credentials, use TurbineProxy's built-in AES-256-GCM encryption.
 
+### Threat model
+
+This protects against **offline file theft** — a stolen SQLite file, disk snapshot, or backup cannot be used to extract passwords without the encryption key.
+
+**It does not protect against a fully compromised host.** If an attacker has runtime access to the process, they can read the key from environment variables or from `/proc/<pid>/environ`. For that threat level, use the OS keyring option below or an external secret manager.
+
 ### Step 1: Generate an Encryption Key
 
 ```bash
@@ -48,7 +54,27 @@ This produces a 64-character hex string representing a 32-byte key. Example:
 a3f1c2e4b5d6a7f8e9c0b1a2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2
 ```
 
-### Step 2: Set the Environment Variable
+### Step 2: Configure the Key
+
+TurbineProxy tries the following sources in order:
+
+#### Option A — OS keyring (strongest protection)
+
+Available when built with `--features keyring-support`. The key is stored in the platform native secret store (Keychain on macOS, libsecret/kwallet on Linux). An attacker who copies the SQLite file or disk cannot retrieve the key without an active user session.
+
+```bash
+# Store once (one-time setup)
+keyring set turbineproxy encryption-key $(openssl rand -hex 32)
+
+# Build with keyring support
+cargo build --release --features keyring-support
+```
+
+No environment variable needed — TurbineProxy reads from the keyring automatically.
+
+#### Option B — Environment variable
+
+The default and most portable option:
 
 ```bash
 export TURBINEPROXY_SECRET_KEY=a3f1c2e4b5d6a7f8e9c0b1a2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2
@@ -77,7 +103,7 @@ user     = "proxyuser"
 password = "enc:aBcDeFgHiJkLmNoPqRsTuVwXyZ..."
 ```
 
-TurbineProxy decrypts the value at startup using `TURBINEPROXY_SECRET_KEY`.
+TurbineProxy decrypts the value at startup using whichever key source is configured.
 
 ### Encryption Details
 

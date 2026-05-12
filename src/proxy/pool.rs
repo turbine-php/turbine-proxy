@@ -251,6 +251,8 @@ pub struct BackendPool {
     pub gr_primary_idx: AtomicI64,
     /// Live snapshot of Group Replication cluster members for `/api/cluster`.
     pub gr_members: Arc<tokio::sync::Mutex<Vec<GrMember>>>,
+    /// Total number of HA failovers triggered since process start.
+    pub failover_events_total: AtomicUsize,
 }
 
 impl BackendPool {
@@ -286,7 +288,13 @@ impl BackendPool {
             failover_idx: AtomicI64::new(-1),
             gr_primary_idx: AtomicI64::new(-1),
             gr_members: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            failover_events_total: AtomicUsize::new(0),
         }
+    }
+
+    /// Returns `true` when an HA failover replica is currently serving as primary.
+    pub fn failover_active(&self) -> bool {
+        self.failover_idx.load(Ordering::Relaxed) >= 0
     }
 
     /// Returns the address of the currently effective primary backend.
@@ -547,6 +555,7 @@ impl BackendPool {
             replica_evicted,
             replica_count: self.replicas.len(),
             failover_active: self.failover_idx.load(Ordering::Relaxed) >= 0,
+            failover_events_total: self.failover_events_total.load(Ordering::Relaxed),
         }
     }
 
@@ -657,6 +666,8 @@ pub struct PoolStats {
     pub replica_evicted: usize,
     pub replica_count: usize,
     pub failover_active: bool,
+    /// Total HA failovers triggered since process start.
+    pub failover_events_total: usize,
 }
 
 #[cfg(test)]

@@ -149,6 +149,16 @@ impl Router {
         self.pool.read().await.clone()
     }
 
+    /// Non-blocking check: returns `true` when an HA failover replica is
+    /// currently serving as primary.  Falls back to `false` if the lock is
+    /// contended (advisory — used only for logging).
+    pub fn failover_active_nowait(&self) -> bool {
+        match self.pool.try_read() {
+            Ok(guard) => guard.failover_active(),
+            Err(_) => false,
+        }
+    }
+
     /// Execute a query with the per-query timeout enforced.
     ///
     /// If the timeout fires:

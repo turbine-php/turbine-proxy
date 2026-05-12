@@ -351,6 +351,9 @@ async fn handle_pg_connection(
     let mut pg_shadow = PgStmtShadow::new();
     let mut query_tracker = SessionQueryTracker::new(conn_id, srv.n1_store.clone());
     let mut active_trace: Option<ActiveTrace> = None;
+    // Warn once per session when a write query is routed through the failover
+    // backend (primary is down).  Reset to false if failover clears.
+    let mut warned_failover_write = false;
 
     // RYOW window
     let ryow_ms = srv.config.read_your_own_writes_ms;
@@ -430,6 +433,18 @@ async fn handle_pg_connection(
                     srv.metrics.queries_read.fetch_add(1, Ordering::Relaxed);
                 } else if is_write {
                     srv.metrics.queries_write.fetch_add(1, Ordering::Relaxed);
+                    // Warn once per session if this write will land on a failover
+                    // replica because the configured primary is unreachable.
+                    if !warned_failover_write && srv.router.failover_active_nowait() {
+                        warned_failover_write = true;
+                        log::warn!(
+                            "[HA pg conn {}] write query routed through failover backend — configured primary is down",
+                            conn_id
+                        );
+                    } else if warned_failover_write && !srv.router.failover_active_nowait() {
+                        // Primary recovered during this session — reset so we warn again if it fails again.
+                        warned_failover_write = false;
+                    }
                 }
 
                 // ── Write permission check ──────────────────────────────────

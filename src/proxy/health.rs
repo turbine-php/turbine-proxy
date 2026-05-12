@@ -155,12 +155,16 @@ impl HealthChecker {
         match best {
             Some((idx, cfg)) => {
                 self.pool.failover_idx.store(idx as i64, Ordering::Relaxed);
+                self.pool
+                    .failover_events_total
+                    .fetch_add(1, Ordering::Relaxed);
                 log::error!(
-                    "[HA] FAILOVER: primary {} down after {} checks — promoting replica [{}] {}",
+                    "[HA] FAILOVER: primary {} down after {} checks — promoting replica [{}] {} (total failovers: {})",
                     self.primary_config.addr,
                     self.failover_threshold,
                     idx,
                     cfg.addr,
+                    self.pool.failover_events_total.load(Ordering::Relaxed),
                 );
             }
             None => {

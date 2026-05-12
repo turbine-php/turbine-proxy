@@ -194,6 +194,27 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
     )
     .ok();
 
+    // ── HA / failover metrics ────────────────────────────────────────────────
+    let pool_stats = pool.pool_stats().await;
+
+    out.push_str("\n# HELP turbineproxy_ha_failover_active 1 when an HA failover replica is currently serving as primary, 0 otherwise.\n");
+    out.push_str("# TYPE turbineproxy_ha_failover_active gauge\n");
+    writeln!(
+        out,
+        "turbineproxy_ha_failover_active {}",
+        if pool_stats.failover_active { 1 } else { 0 }
+    )
+    .ok();
+
+    out.push_str("\n# HELP turbineproxy_ha_failover_events_total Total number of HA failovers triggered since process start.\n");
+    out.push_str("# TYPE turbineproxy_ha_failover_events_total counter\n");
+    writeln!(
+        out,
+        "turbineproxy_ha_failover_events_total {}",
+        pool_stats.failover_events_total
+    )
+    .ok();
+
     out
 }
 
