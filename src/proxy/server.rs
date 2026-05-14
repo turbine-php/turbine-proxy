@@ -846,6 +846,12 @@ async fn handle_connection(
                 }
 
                 // Update client-side transaction state for routing decisions.
+                // For BEGIN/START we set the flag immediately so subsequent queries
+                // are routed through the sticky tx_conn.  For COMMIT/ROLLBACK we
+                // defer the state change until AFTER routing so the COMMIT itself
+                // still goes through the tx_conn (same backend that has the open
+                // transaction).
+                let mut is_tx_end = false;
                 if matches!(intent, QueryIntent::Transaction) {
                     let upper = sql.trim().to_uppercase();
                     if upper.starts_with("BEGIN") || upper.starts_with("START") {
@@ -855,19 +861,8 @@ async fn handle_connection(
                         active_trace =
                             Some(ActiveTrace::new(conn_id, &session_username, &client_addr));
                     } else if upper.starts_with("COMMIT") || upper.starts_with("ROLLBACK") {
-                        session.set_in_transaction(false);
-                        tx_start = None;
-                        // Finalise the trace and push to the store.
-                        if let Some(trace) = active_trace.take() {
-                            let outcome = if upper.starts_with("COMMIT") {
-                                "commit"
-                            } else {
-                                "rollback"
-                            };
-                            tracer_store.push(trace.finish(outcome));
-                        }
-                        // Release user-var sticky conn only when transaction ends
-                        // and no open stmts — the tx_conn will be returned to pool.
+                        // Mark for deferred cleanup — state change happens after routing.
+                        is_tx_end = true;
                     }
                 }
 
@@ -1441,6 +1436,29 @@ async fn handle_connection(
 
                 // Record analytics — try_send never blocks the hot path.
                 collector.try_record(sql, elapsed, was_read);
+
+                // Deferred transaction-end cleanup: now that COMMIT/ROLLBACK has
+                // been routed through the tx_conn, update session state and return
+                // the sticky connection to the pool.
+                if is_tx_end {
+                    session.set_in_transaction(false);
+                    tx_start = None;
+                    last_query_in_tx = None;
+                    // Finalise the trace and push to the store.
+                    let upper = sql.trim().to_uppercase();
+                    if let Some(trace) = active_trace.take() {
+                        let outcome = if upper.starts_with("COMMIT") {
+                            "commit"
+                        } else {
+                            "rollback"
+                        };
+                        tracer_store.push(trace.finish(outcome));
+                    }
+                    // Return the sticky connection to the pool.
+                    if let Some(conn) = tx_conn.take() {
+                        router.put_primary(conn).await;
+                    }
+                }
 
                 if let Err(e) = session.flush().await {
                     log::debug!("Flush error: {}", e);
