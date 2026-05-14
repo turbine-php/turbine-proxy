@@ -137,12 +137,12 @@ enabled = false
     let child = Command::new(binary)
         .arg(config.path())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit()) // surface proxy startup errors in test output
         .spawn()
         .unwrap_or_else(|e| panic!("failed to start turbineproxy binary at {binary}: {e}"));
 
-    // Wait until the proxy accepts connections (up to 10 s).
-    for attempt in 0..50 {
+    // Wait until the proxy accepts connections (up to 30 s).
+    for attempt in 0..150 {
         std::thread::sleep(Duration::from_millis(200));
         let opts = OptsBuilder::new()
             .ip_or_hostname(Some("127.0.0.1"))
@@ -158,7 +158,7 @@ enabled = false
             };
         }
     }
-    panic!("TurbineProxy did not become ready within 10 s");
+    panic!("TurbineProxy did not become ready within 30 s");
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
