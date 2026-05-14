@@ -28,6 +28,8 @@ pub struct PgHealthChecker {
     patroni_check: bool,
     patroni_api_port: u16,
     health_check_database: String,
+    cooldown_secs: u64,
+    min_recovery_checks: u32,
 }
 
 impl PgHealthChecker {
@@ -48,6 +50,8 @@ impl PgHealthChecker {
             patroni_check: cfg.patroni_check,
             patroni_api_port: cfg.patroni_api_port,
             health_check_database: cfg.health_check_database.trim().to_string(),
+            cooldown_secs: cfg.failover_cooldown_secs,
+            min_recovery_checks: cfg.failover_min_recovery_checks,
         })
     }
 
@@ -98,15 +102,48 @@ impl PgHealthChecker {
                 .healthy
                 .swap(true, Ordering::Relaxed);
 
-            if was_down || prev >= self.failover_threshold {
-                let had_failover = self.pool.failover_idx.load(Ordering::Relaxed) >= 0;
-                self.pool.failover_idx.store(-1, Ordering::Relaxed);
-                if had_failover {
+            let had_failover = self.pool.failover_idx.load(Ordering::Relaxed) >= 0;
+
+            if had_failover {
+                let recovery_count = self.pool.recovery_checks.fetch_add(1, Ordering::Relaxed) + 1;
+
+                if recovery_count < self.min_recovery_checks as usize {
                     log::info!(
-                        "[pg health] Primary {} recovered — failover cleared",
-                        self.primary_config.addr
+                        "[pg health] Primary {} responding ({}/{} recovery checks) — failover still active",
+                        self.primary_config.addr,
+                        recovery_count,
+                        self.min_recovery_checks,
                     );
+                    return;
                 }
+
+                let triggered_at = self.pool.failover_triggered_at.load(Ordering::Relaxed);
+                if triggered_at > 0 && self.cooldown_secs > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let elapsed = now.saturating_sub(triggered_at);
+                    if elapsed < self.cooldown_secs {
+                        log::warn!(
+                            "[pg health] Primary {} recovered but cooldown active ({}/{}s) — failover held",
+                            self.primary_config.addr,
+                            elapsed,
+                            self.cooldown_secs,
+                        );
+                        return;
+                    }
+                }
+
+                self.pool.failover_idx.store(-1, Ordering::Relaxed);
+                self.pool.recovery_checks.store(0, Ordering::Relaxed);
+                self.pool.failover_triggered_at.store(0, Ordering::Relaxed);
+                log::info!(
+                    "[pg health] Primary {} recovered — failover cleared",
+                    self.primary_config.addr
+                );
+            } else if was_down || prev >= self.failover_threshold {
+                self.pool.recovery_checks.store(0, Ordering::Relaxed);
             }
         } else {
             let failures = self
@@ -187,6 +224,31 @@ impl PgHealthChecker {
     }
 
     fn trigger_failover(&self) {
+        // Detect flapping.
+        let prev_triggered_at = self.pool.failover_triggered_at.load(Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if prev_triggered_at > 0 && self.cooldown_secs > 0 {
+            let elapsed = now.saturating_sub(prev_triggered_at);
+            if elapsed < self.cooldown_secs * 2 {
+                self.pool
+                    .failover_flap_total
+                    .fetch_add(1, Ordering::Relaxed);
+                log::warn!(
+                    "[pg health] Failover FLAP detected — re-triggering {}s after last failover (cooldown={}s)",
+                    elapsed,
+                    self.cooldown_secs,
+                );
+            }
+        }
+
+        self.pool
+            .failover_triggered_at
+            .store(now, Ordering::Relaxed);
+        self.pool.recovery_checks.store(0, Ordering::Relaxed);
+
         let best = self
             .replica_configs
             .iter()
@@ -209,9 +271,13 @@ impl PgHealthChecker {
         match best {
             Some((idx, cfg)) => {
                 self.pool.failover_idx.store(idx as i64, Ordering::Relaxed);
+                self.pool
+                    .failover_events_total
+                    .fetch_add(1, Ordering::Relaxed);
                 log::error!(
-                    "[pg health] FAILOVER: primary {} down after {} checks — promoting replica [{}] {}",
+                    "[pg health] FAILOVER: primary {} down after {} checks — promoting replica [{}] {} (total failovers: {})",
                     self.primary_config.addr, self.failover_threshold, idx, cfg.addr,
+                    self.pool.failover_events_total.load(Ordering::Relaxed),
                 );
             }
             None => {

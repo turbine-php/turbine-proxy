@@ -20,9 +20,9 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | **Proxy action (HA disabled)** | All writes and reads-on-primary return `ER_LOST_CONNECTION` / connection error |
 | **Client sees** | Connection errors on the first N checks; transparent routing to failover backend afterwards |
 | **Writes during failover** | Routed to the promoted replica — `WARN` log per session: `[HA] write query routed through failover backend` |
-| **Recovery** | When the primary responds to a health check, `failover_idx` is cleared atomically and routing returns to primary. Logged at `INFO` level. |
-| **Observability** | `turbineproxy_ha_failover_active` (gauge), `turbineproxy_ha_failover_events_total` (counter), log prefix `[HA]` at `WARN`/`ERROR` level, `consecutive_failures` per backend in `/api/pool` |
-| **Config levers** | `ha.health_check_interval_secs`, `ha.primary_failover_threshold` |
+| **Recovery** | When the primary responds to health checks, the failover is cleared after passing both the `failover_min_recovery_checks` threshold (default 3 consecutive OK checks) and the `failover_cooldown_secs` timer (default 30s since last failover trigger). This prevents flapping when the primary is unstable. Logged at `INFO` level. |
+| **Observability** | `turbineproxy_ha_failover_active` (gauge), `turbineproxy_ha_failover_events_total` (counter), `turbineproxy_ha_failover_flap_total` (counter — re-triggers within cooldown window), log prefix `[HA]` at `WARN`/`ERROR` level, `consecutive_failures` per backend in `/api/pool` |
+| **Config levers** | `ha.health_check_interval_secs`, `ha.primary_failover_threshold`, `ha.failover_cooldown_secs`, `ha.failover_min_recovery_checks` |
 
 **What does NOT happen:** The proxy does not attempt to restart or reconnect to the database. It does not split writes across backends. It does not promote silently — every failover event is logged at `ERROR` level.
 

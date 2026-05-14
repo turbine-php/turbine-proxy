@@ -10,10 +10,12 @@ TurbineProxy includes built-in health monitoring for all backends and can automa
 
 ```toml
 [ha]
-enabled                   = true
-health_check_interval_secs = 5
-max_replica_lag_ms         = 5000
-primary_failover_threshold = 3
+enabled                      = true
+health_check_interval_secs   = 5
+max_replica_lag_ms           = 5000
+primary_failover_threshold   = 3
+failover_cooldown_secs       = 30
+failover_min_recovery_checks = 3
 ```
 
 With HA enabled, TurbineProxy spawns a background health checker that periodically connects to all backends and verifies:
@@ -53,6 +55,45 @@ primary_failover_threshold = 3   # Fail after 3 missed checks (15s at default in
 ```
 
 > **Note**: TurbineProxy performs a **soft failover** at the proxy level — it routes writes to the promoted replica, but does not issue `STOP SLAVE` or `CHANGE MASTER TO` commands. This is safe for use with external orchestrators (Orchestrator, Patroni).
+
+## Flapping Protection
+
+When a primary is unstable (bouncing between reachable and unreachable), the proxy can enter a flapping state — rapidly toggling between failover and recovery. TurbineProxy prevents this with two mechanisms:
+
+### Recovery threshold
+
+After a failover is triggered, the primary must pass `failover_min_recovery_checks` consecutive successful health checks before the failover is cleared:
+
+```toml
+[ha]
+failover_min_recovery_checks = 3   # 3 consecutive OK pings (default)
+```
+
+### Cooldown timer
+
+Even after the recovery threshold is met, TurbineProxy holds the failover active for `failover_cooldown_secs` since the failover was triggered:
+
+```toml
+[ha]
+failover_cooldown_secs = 30   # Hold failover for at least 30s (default)
+```
+
+Set to `0` to revert to the legacy behaviour (clear immediately on first successful check).
+
+### Flap detection
+
+If a failover is re-triggered within `cooldown_secs * 2` of the previous trigger, TurbineProxy increments the `turbineproxy_ha_failover_flap_total` counter and logs a `[HA] Failover FLAP detected` warning. Use this metric to alert on unstable primaries.
+
+### Recommended alerting
+
+```yaml
+# Prometheus alert rule
+- alert: TurbineProxyFailoverFlapping
+  expr: increase(turbineproxy_ha_failover_flap_total[10m]) > 2
+  for: 1m
+  annotations:
+    summary: "Primary database is flapping — investigate stability"
+```
 
 ## Manual Cluster Operations
 

@@ -802,6 +802,19 @@ pub struct HaConfig {
     #[serde(default = "default_failover_threshold")]
     pub primary_failover_threshold: u32,
 
+    /// After primary recovery, keep failover active for this many seconds before
+    /// clearing it. Prevents flapping when the primary is unstable.
+    /// 0 = clear immediately on first successful check (legacy behaviour).
+    /// Default: 30.
+    #[serde(default = "default_failover_cooldown_secs")]
+    pub failover_cooldown_secs: u64,
+
+    /// Number of consecutive successful health checks required before clearing
+    /// a failover. Symmetric to `primary_failover_threshold`.
+    /// Default: 3.
+    #[serde(default = "default_failover_min_recovery_checks")]
+    pub failover_min_recovery_checks: u32,
+
     /// Enable Galera / Percona XtraDB Cluster node-state checks.
     ///
     /// When `true`, the health checker queries `SHOW GLOBAL STATUS LIKE 'wsrep_local_state'`
@@ -824,6 +837,8 @@ impl Default for HaConfig {
             health_check_interval_secs: default_health_interval(),
             max_replica_lag_ms: default_max_lag_ms(),
             primary_failover_threshold: default_failover_threshold(),
+            failover_cooldown_secs: default_failover_cooldown_secs(),
+            failover_min_recovery_checks: default_failover_min_recovery_checks(),
             galera_check: false,
         }
     }
@@ -901,6 +916,12 @@ fn default_max_lag_ms() -> u64 {
     5000
 }
 fn default_failover_threshold() -> u32 {
+    3
+}
+fn default_failover_cooldown_secs() -> u64 {
+    30
+}
+fn default_failover_min_recovery_checks() -> u32 {
     3
 }
 fn default_patroni_port() -> u16 {
@@ -1038,6 +1059,15 @@ pub struct PgsqlConfig {
     /// Consecutive primary check failures before failover (default: 3).
     #[serde(default = "default_failover_threshold")]
     pub primary_failover_threshold: u32,
+
+    /// After primary recovery, keep failover active for this many seconds.
+    /// 0 = clear immediately (legacy behaviour). Default: 30.
+    #[serde(default = "default_failover_cooldown_secs")]
+    pub failover_cooldown_secs: u64,
+
+    /// Consecutive successful checks required before clearing failover. Default: 3.
+    #[serde(default = "default_failover_min_recovery_checks")]
+    pub failover_min_recovery_checks: u32,
 
     /// Database used exclusively for backend health probes (`SELECT 1`,
     /// `pg_is_in_recovery()`). This lets client sessions use any database while

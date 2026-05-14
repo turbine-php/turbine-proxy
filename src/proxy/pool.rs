@@ -253,6 +253,12 @@ pub struct BackendPool {
     pub gr_members: Arc<tokio::sync::Mutex<Vec<GrMember>>>,
     /// Total number of HA failovers triggered since process start.
     pub failover_events_total: AtomicUsize,
+    /// Total flap events (failover cleared then re-triggered within cooldown window).
+    pub failover_flap_total: AtomicUsize,
+    /// Consecutive successful primary checks since last failure (used for recovery threshold).
+    pub recovery_checks: AtomicUsize,
+    /// Instant when the last failover was triggered (epoch secs, 0 = never).
+    pub failover_triggered_at: AtomicU64,
 }
 
 impl BackendPool {
@@ -289,6 +295,9 @@ impl BackendPool {
             gr_primary_idx: AtomicI64::new(-1),
             gr_members: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             failover_events_total: AtomicUsize::new(0),
+            failover_flap_total: AtomicUsize::new(0),
+            recovery_checks: AtomicUsize::new(0),
+            failover_triggered_at: AtomicU64::new(0),
         }
     }
 
@@ -556,6 +565,7 @@ impl BackendPool {
             replica_count: self.replicas.len(),
             failover_active: self.failover_idx.load(Ordering::Relaxed) >= 0,
             failover_events_total: self.failover_events_total.load(Ordering::Relaxed),
+            failover_flap_total: self.failover_flap_total.load(Ordering::Relaxed),
         }
     }
 
@@ -668,6 +678,8 @@ pub struct PoolStats {
     pub failover_active: bool,
     /// Total HA failovers triggered since process start.
     pub failover_events_total: usize,
+    /// Total flap events.
+    pub failover_flap_total: usize,
 }
 
 #[cfg(test)]

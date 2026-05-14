@@ -215,6 +215,15 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
     )
     .ok();
 
+    out.push_str("\n# HELP turbineproxy_ha_failover_flap_total Total failover flap events (re-triggered within cooldown window).\n");
+    out.push_str("# TYPE turbineproxy_ha_failover_flap_total counter\n");
+    writeln!(
+        out,
+        "turbineproxy_ha_failover_flap_total {}",
+        pool_stats.failover_flap_total
+    )
+    .ok();
+
     out
 }
 

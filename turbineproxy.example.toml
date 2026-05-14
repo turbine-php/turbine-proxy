@@ -232,6 +232,12 @@ health_check_interval_secs = 5
 max_replica_lag_ms = 5000
 # Consecutive primary health check failures before triggering failover. Default: 3.
 primary_failover_threshold = 3
+# After primary recovery, keep failover active for this many seconds before clearing.
+# Prevents flapping when the primary is unstable. 0 = clear immediately. Default: 30.
+# failover_cooldown_secs = 30
+# Consecutive successful health checks required before clearing a failover.
+# Symmetric to primary_failover_threshold. Default: 3.
+# failover_min_recovery_checks = 3
 
 # Galera / Percona XtraDB Cluster node-state checks.
 # When true, the health checker queries SHOW GLOBAL STATUS LIKE 'wsrep_local_state'
