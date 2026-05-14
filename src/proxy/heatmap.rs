@@ -138,7 +138,7 @@ impl HeatmapStore {
 
         // Top-3 peaks by query count.
         let mut sorted = cells.clone();
-        sorted.sort_by(|a, b| b.queries.cmp(&a.queries));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.queries));
         let peaks: Vec<HeatCell> = sorted
             .into_iter()
             .filter(|c| c.queries > 0)

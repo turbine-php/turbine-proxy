@@ -68,13 +68,11 @@ pub fn scan_pg_pipeline(raw: &[u8]) -> PgPipelineScan {
                     }
                 }
             }
-            b'C' => {
+            b'C' if payload.len() >= 2 && payload[0] == b'S' => {
                 // Close: type('S'=statement / 'P'=portal) + name\0
-                if payload.len() >= 2 && payload[0] == b'S' {
-                    if let Some((name, _)) = read_cstr(&payload[1..]) {
-                        if !name.is_empty() {
-                            scan.closes.push(name);
-                        }
+                if let Some((name, _)) = read_cstr(&payload[1..]) {
+                    if !name.is_empty() {
+                        scan.closes.push(name);
                     }
                 }
             }

@@ -173,7 +173,7 @@ impl AppAnalyticsStore {
                 last_seen_ms: s.last_seen_ms,
             })
             .collect();
-        entries.sort_by(|a, b| b.queries_total.cmp(&a.queries_total));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.queries_total));
         entries
     }
 }

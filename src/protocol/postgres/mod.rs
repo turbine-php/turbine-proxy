@@ -909,11 +909,8 @@ async fn pg_backend_auth(
                 }
             }
             b'S' => {} // ParameterStatus — ignore
-            b'K' => {
-                if payload.len() >= 4 {
-                    backend_pid =
-                        u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                }
+            b'K' if payload.len() >= 4 => {
+                backend_pid = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
             }
             b'Z' => break, // ReadyForQuery — auth complete
             b'E' => {

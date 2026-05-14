@@ -517,9 +517,9 @@ async fn collect_query_rows(state: &AppState, by_p95: bool) -> Vec<QueryRow> {
         .collect();
 
     if by_p95 {
-        rows.sort_by(|a, b| b.p95_us.unwrap_or(0).cmp(&a.p95_us.unwrap_or(0)));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.p95_us.unwrap_or(0)));
     } else {
-        rows.sort_by(|a, b| b.count.cmp(&a.count));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.count));
     }
     rows.truncate(50);
     rows
