@@ -66,8 +66,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo test (lib + bins)
-        run: cargo test --lib --bins
+      - name: cargo test (bin unit tests)
+        run: cargo test --bins
 
   # ── Code coverage ──────────────────────────────────────────────────────────
   coverage:
