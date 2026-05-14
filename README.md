@@ -47,13 +47,13 @@ Client ──TLS──▶ TurbineProxy ──TLS──▶ Primary  (writes + tra
 | **Protocols** | MySQL 8.0+, MariaDB 10.6+, PostgreSQL 14+ |
 | **Routing** | Auto read/write split, query rules (regex/digest/user/schema), per-rule fast-forward, hostgroup pinning, weighted round-robin, backup replicas |
 | **Consistency** | Time-based RYOW, GTID-aware RYOW, sticky connections for user variables and prepared statements |
-| **Pooling** | Per-backend pool, per-backend `max_connections` cap, idle eviction, multiplexing, stmt_conn isolation from tx_conn |
+| **Pooling** | Per-backend pool, per-backend `max_connections` cap, idle eviction, **1:N connection multiplexing**, bounded wait queue, stmt_conn isolation from tx_conn |
 | **Compression** | zlib (MySQL 5.7+), zstd (MySQL 8.0.18+) on backend connections |
 | **Performance** | Global & per-rule fast-forward mode (zero-overhead passthrough), per-rule QPS rate limiting (token bucket), result cache with TTL, query rewriting (LIMIT injection, timeout hints) |
 | **TLS** | Frontend TLS (client → proxy), backend TLS (proxy → DB), verify-identity for RDS/Cloud SQL, NSS Key Log for debugging |
 | **Security** | SQL injection protection (UNION, stacked queries, SLEEP, BENCHMARK, INTO OUTFILE, xp_cmdshell, hex evasion…), per-user rules, read-only enforcement, query allowlist, append-only audit log, **AES-256-GCM at-rest encryption** for stored passwords, external secret references (`env:` / `file:`) |
-| **HA** | Health checks, lag monitoring, automatic failover with **flap protection** (cooldown + min recovery checks), Group Replication / InnoDB Cluster awareness, Galera check, PROXY Protocol v2 (HAProxy, AWS NLB), multi-node cluster config sync |
-| **Observability** | Prometheus metrics (14 metric families + histograms), Grafana dashboard JSON, query heatmap, N+1 detector, index advisor, slow query log, per-query tracer, failure mode reference |
+| **HA** | Health checks, lag monitoring, automatic failover with **flap protection** (cooldown + min recovery checks), **per-backend circuit breaker** (Closed/Open/Half-Open), **bounded wait queue** with timeout, Group Replication / InnoDB Cluster awareness, Galera check, PROXY Protocol v2 (HAProxy, AWS NLB), multi-node cluster config sync |
+| **Observability** | Prometheus metrics (18 metric families + histograms), Grafana dashboard JSON, query heatmap, N+1 detector, index advisor, slow query log, per-query tracer, failure mode reference |
 | **Operations** | Per-port `server_version` string, zero-downtime reload (SIGHUP / dashboard), dry-run query rules, Helm chart, Docker (distroless), AUR / deb / Homebrew packages, systemd unit, logrotate config |
 | **AI / Automation** | Embedded MCP server (7 tools) for AI assistant integration |
 
@@ -229,6 +229,7 @@ audit_log = "/var/log/turbineproxy/audit.log"
 
 - **Frontend (client → proxy):** `[frontend_tls]` with cert and key.
 - **Backend (proxy → database):** `tls_mode` per backend (`required`, `verify-ca`, `verify-identity`). Use `verify-identity` for RDS / Cloud SQL / Aurora.
+- **PostgreSQL TLS:** Full TLS upgrade supported for both client (SSLRequest → `sslmode=require`) and backend (SSLRequest → connect). Cloud-managed PostgreSQL (RDS, Cloud SQL, Neon) works with `tls_mode = "verify-identity"`.
 - **SSL Key Log:** NSS Key Log for Wireshark. **Debug environments only.**
 
 ```toml
@@ -242,6 +243,11 @@ ssl_keylog_file = "/tmp/sslkeys.log"   # debug only
 - Dashboard credentials are separate from database credentials.
 - Dashboard login uses **constant-time comparison** (via `subtle`) to prevent timing-based attacks.
 - Session tokens are stored as **SHA-256 hashes** in memory — a process memory dump does not yield usable tokens.
+- Session tokens expire after `token_ttl_secs` (default 24 h). The sweeper task evicts expired tokens every 60 s.
+- Tokens can be refreshed without re-entering credentials: `POST /api/auth/refresh` atomically revokes the old token and issues a fresh one with a renewed TTL.
+- Login attempts are **rate-limited per source IP** (`login_max_attempts` per minute, default 5). Excessive attempts return HTTP 429.
+- Failed authentication events (wrong password, invalid/expired token) increment `turbineproxy_dashboard_auth_failures_total` — monitor this counter for brute-force detection.
+- A **read-only role** (`readonly_username` / `readonly_password`) gives dashboard visibility without write access — POST/PUT/DELETE requests return 403.
 - SHA-1 and SHA-256 auth tokens are pre-computed at startup and cached (`auth_cache_ttl_secs`). Plaintext passwords are not held in memory after the cache is warm.
 
 #### External Secret References
@@ -350,6 +356,11 @@ password    = "change-me"
 | `turbineproxy_replica_lag_seconds` | gauge | `backend` |
 | `turbineproxy_backend_healthy` | gauge | `backend`, `role` |
 | `turbineproxy_sqli_blocked_total` | counter | — |
+| `turbineproxy_whitelist_blocked_total` | counter | — |
+| `turbineproxy_sessions_pinned_total` | counter | — |
+| `turbineproxy_multiplex_ratio` | gauge | — |
+| `turbineproxy_pg_replica_lag_seconds` | gauge | `backend` |
+| `turbineproxy_dashboard_auth_failures_total` | counter | — |
 
 A pre-built Grafana dashboard JSON is at `dashboard/public/grafana/turbineproxy.json`.
 
@@ -375,14 +386,21 @@ cross build --release --target x86_64-unknown-linux-musl
 ## Testing
 
 ```bash
-cargo test --bins
+# Unit tests (including panic-recovery tests for parking_lot)
+cargo test --bin turbineproxy
 
+# MySQL integration tests
 docker compose up mysql80 -d
 cargo test --test integration_tests -- --test-threads=1
 
+# PostgreSQL integration tests (includes TLS test; skips if psql not in PATH)
 docker compose up postgres14 -d
 cargo test --test pg_integration_tests -- --test-threads=1
 
+# Skip PG TLS test if server has SSL disabled
+TEST_PG_SKIP_TLS=1 cargo test --test pg_integration_tests -- --test-threads=1
+
+# Benchmarks
 cargo bench -- hot_path
 ```
 

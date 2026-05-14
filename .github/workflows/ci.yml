@@ -24,6 +24,17 @@ jobs:
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: cargo clippy (unwrap lint on critical paths)
+        run: |
+          cargo clippy \
+            --all-targets \
+            -- \
+            -D clippy::unwrap_used \
+            --allow clippy::all \
+            2>&1 | grep -E "^error\[clippy::unwrap_used\]" | \
+            grep -E "src/(dashboard|analytics)/" | \
+            (! grep .) || \
+            (echo "clippy::unwrap_used found in critical paths" && exit 1)
 
   # ── Security audit ─────────────────────────────────────────────────────────
   security:

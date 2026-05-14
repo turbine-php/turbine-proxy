@@ -756,3 +756,81 @@ fn pg_test_primary_not_in_recovery() {
         );
     });
 }
+
+// ── TLS / SSL tests ────────────────────────────────────────────────────────────
+
+/// Verify that the PostgreSQL primary accepts a connection with SSL enabled.
+///
+/// Uses the `psql` binary (which must be in PATH) so we don't need an extra
+/// Rust TLS dependency in the test harness.  The test is automatically skipped
+/// when `psql` is not installed, when the `TEST_PG_SKIP_TLS` env-var is set, or
+/// when the server is unreachable.
+#[test]
+fn pg_tls_connection_with_psql() {
+    if std::env::var("TEST_PG_SKIP_TLS").is_ok() {
+        eprintln!("pg_tls_connection_with_psql: skipped (TEST_PG_SKIP_TLS is set)");
+        return;
+    }
+
+    // Ensure psql binary is available.
+    let psql_check = std::process::Command::new("psql")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if psql_check.is_err() || !psql_check.unwrap().success() {
+        eprintln!("pg_tls_connection_with_psql: skipped (psql not found in PATH)");
+        return;
+    }
+
+    let host = pg_host();
+    let port = pg_port();
+    let user = pg_user();
+    let pass = pg_pass();
+
+    // Build a minimal connstring with sslmode=require.
+    let connstring = format!(
+        "postgresql://{}:{}@{}:{}/postgres?sslmode=require&connect_timeout=5",
+        user, pass, host, port
+    );
+
+    let out = std::process::Command::new("psql")
+        .env("PGPASSWORD", &pass)
+        .args([
+            &connstring,
+            "-c",
+            "SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()",
+        ])
+        .output();
+
+    match out {
+        Err(e) => {
+            eprintln!("pg_tls_connection_with_psql: skipped (psql exec error: {e})");
+        }
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if !output.status.success() {
+                if stderr.contains("Connection refused")
+                    || stderr.contains("could not connect")
+                    || stderr.contains("FATAL")
+                    || stderr.contains("ssl off")
+                {
+                    eprintln!("pg_tls_connection_with_psql: skipped (server unreachable or SSL not configured: {stderr})");
+                    return;
+                }
+                panic!(
+                    "psql exited with status {} — stderr: {}",
+                    output.status, stderr
+                );
+            }
+
+            // The query returns 't' (true) if the connection uses SSL.
+            assert!(
+                stdout.contains('t'),
+                "Expected SSL=t in pg_stat_ssl output, got:\nstdout: {stdout}\nstderr: {stderr}"
+            );
+        }
+    }
+}

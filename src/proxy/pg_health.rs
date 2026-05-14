@@ -78,6 +78,8 @@ impl PgHealthChecker {
         loop {
             ticker.tick().await;
             self.check_primary().await;
+            // Discover streaming replicas from the primary's pg_stat_replication view.
+            self.discover_replicas().await;
             for (idx, cfg) in self.replica_configs.iter().enumerate() {
                 self.check_replica(idx, cfg).await;
             }
@@ -91,6 +93,10 @@ impl PgHealthChecker {
         let ok = self.ping_and_check_primary(&control_cfg).await;
 
         if ok {
+            // Drive the primary circuit breaker from health-check results so that
+            // traffic routing and health-check state stay in sync.
+            self.pool.primary_breaker.record_success();
+
             let prev = self
                 .pool
                 .primary_health
@@ -146,6 +152,8 @@ impl PgHealthChecker {
                 self.pool.recovery_checks.store(0, Ordering::Relaxed);
             }
         } else {
+            self.pool.primary_breaker.record_failure();
+
             let failures = self
                 .pool
                 .primary_health
@@ -341,6 +349,10 @@ impl PgHealthChecker {
                         e
                     );
                 }
+                // Drive replica circuit breaker from health-check failures.
+                if idx < self.pool.replica_breakers.len() {
+                    self.pool.replica_breakers[idx].record_failure();
+                }
             }
             Ok(mut conn) => {
                 // Confirm this is actually a standby
@@ -372,6 +384,15 @@ impl PgHealthChecker {
                     .healthy
                     .swap(healthy, Ordering::Relaxed);
 
+                // Drive replica circuit breaker from health-check results.
+                if idx < self.pool.replica_breakers.len() {
+                    if healthy {
+                        self.pool.replica_breakers[idx].record_success();
+                    } else {
+                        self.pool.replica_breakers[idx].record_failure();
+                    }
+                }
+
                 match (was_healthy, healthy) {
                     (true, false) => log::warn!(
                         "[pg health] Replica [{}] {} lag {}ms > {}ms — removed from read pool",
@@ -389,6 +410,66 @@ impl PgHealthChecker {
                     _ => {}
                 }
             }
+        }
+    }
+
+    // ── Replica auto-discovery via pg_stat_replication ────────────────────────
+
+    /// Query the primary for `pg_stat_replication` and update
+    /// `pool.pg_discovered_replicas` with the count of streaming standbys.
+    /// Also logs any discovered address not present in the configured replica list.
+    async fn discover_replicas(&self) {
+        // Skip if primary is currently in failover (unavailable).
+        if !self.pool.primary_health.healthy.load(Ordering::Relaxed) {
+            return;
+        }
+        let control_cfg = self.control_db_config(&self.primary_config);
+        let mut conn = match self.protocol.connect_backend(&control_cfg).await {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let resp = match conn
+            .execute_query(
+                b"SELECT client_addr::text FROM pg_stat_replication WHERE state = 'streaming'",
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        if resp.is_error {
+            return;
+        }
+
+        let discovered = extract_text_values(&resp.bytes);
+        let count = discovered.len();
+        self.pool
+            .pg_discovered_replicas
+            .store(count, Ordering::Relaxed);
+
+        // Warn about streaming replicas not in the configured replica list.
+        let configured_hosts: Vec<&str> = self
+            .replica_configs
+            .iter()
+            .map(|c| c.addr.split(':').next().unwrap_or(""))
+            .collect();
+        for addr in &discovered {
+            let in_config = configured_hosts
+                .iter()
+                .any(|h| *h == addr.as_str() || addr.starts_with(h));
+            if !in_config {
+                log::info!(
+                    "[pg health] Discovered unconfigured streaming replica: {} \
+                     — add to [pgsql.replicas] to include in read pool",
+                    addr
+                );
+            }
+        }
+        if count > 0 {
+            log::debug!(
+                "[pg health] pg_stat_replication: {} streaming replica(s) connected to primary",
+                count
+            );
         }
     }
 }
@@ -412,6 +493,48 @@ async fn pg_replica_lag_ms(conn: &mut dyn crate::protocol::BackendConnection) ->
     extract_text_value(&resp.bytes)
         .and_then(|s| s.parse::<i64>().ok())
         .map(|secs| (secs.max(0) as u64) * 1000)
+}
+
+/// Extract text values from ALL DataRow ('D') messages in a PG response.
+/// Returns one String per row (first field only), skipping NULL rows.
+fn extract_text_values(bytes: &[u8]) -> Vec<String> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+    while pos + 5 <= bytes.len() {
+        let t = bytes[pos];
+        let len = u32::from_be_bytes([
+            bytes[pos + 1],
+            bytes[pos + 2],
+            bytes[pos + 3],
+            bytes[pos + 4],
+        ]) as usize;
+        if len < 4 || pos + 1 + len > bytes.len() {
+            break;
+        }
+        if t == b'D' {
+            let payload = &bytes[pos + 5..pos + 1 + len];
+            if payload.len() >= 6 {
+                let mut fp = 2; // skip field_count int16
+                let field_len = i32::from_be_bytes([
+                    payload[fp],
+                    payload[fp + 1],
+                    payload[fp + 2],
+                    payload[fp + 3],
+                ]);
+                fp += 4;
+                if field_len >= 0 {
+                    let flen = field_len as usize;
+                    if fp + flen <= payload.len() {
+                        if let Ok(s) = String::from_utf8(payload[fp..fp + flen].to_vec()) {
+                            results.push(s);
+                        }
+                    }
+                }
+            }
+        }
+        pos += 1 + len;
+    }
+    results
 }
 
 /// Scan PG response bytes for a text value in the first DataRow ('D').
@@ -463,4 +586,65 @@ fn extract_text_value(bytes: &[u8]) -> Option<String> {
 /// Check if a byte sequence appears anywhere in the response bytes.
 fn response_contains(bytes: &[u8], needle: &[u8]) -> bool {
     bytes.windows(needle.len()).any(|w| w == needle)
+}
+
+#[cfg(test)]
+mod pg_health_tests {
+    use super::*;
+
+    fn make_datarow(value: &[u8]) -> Vec<u8> {
+        let field_count: u16 = 1;
+        let field_len: i32 = value.len() as i32;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&field_count.to_be_bytes());
+        payload.extend_from_slice(&field_len.to_be_bytes());
+        payload.extend_from_slice(value);
+        let msg_len = (4 + payload.len()) as u32;
+        let mut msg = vec![b'D'];
+        msg.extend_from_slice(&msg_len.to_be_bytes());
+        msg.extend_from_slice(&payload);
+        msg
+    }
+
+    #[test]
+    fn extract_text_value_parses_single_row() {
+        let msg = make_datarow(b"hello");
+        assert_eq!(extract_text_value(&msg).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn extract_text_value_empty_input_returns_none() {
+        assert_eq!(extract_text_value(&[]), None);
+    }
+
+    #[test]
+    fn extract_text_value_truncated_type_only_returns_none() {
+        assert_eq!(extract_text_value(b"D"), None);
+    }
+
+    #[test]
+    fn extract_text_values_multi_row() {
+        let mut buf = make_datarow(b"10.0.0.1");
+        buf.extend_from_slice(&make_datarow(b"10.0.0.2"));
+        let vals = extract_text_values(&buf);
+        assert_eq!(vals, vec!["10.0.0.1", "10.0.0.2"]);
+    }
+
+    #[test]
+    fn extract_text_values_empty_returns_empty_vec() {
+        assert_eq!(extract_text_values(&[]), Vec::<String>::new());
+    }
+
+    #[test]
+    fn response_contains_positive() {
+        assert!(response_contains(
+            b"SELECT pg_is_in_recovery()",
+            b"recovery"
+        ));
+    }
+
+    #[test]
+    fn response_contains_negative() {
+        assert!(!response_contains(b"hello world", b"xyz"));
+    }
 }

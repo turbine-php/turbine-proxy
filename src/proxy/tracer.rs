@@ -8,7 +8,8 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use serde::Serialize;
 
@@ -82,7 +83,7 @@ impl TracerStore {
     /// Push a completed trace. Drops the oldest if the buffer is full.
     pub fn push(&self, mut trace: TransactionTrace) {
         trace.id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut buf = self.traces.lock().expect("tracer lock");
+        let mut buf = self.traces.lock();
         if buf.len() == CAPACITY {
             buf.pop_front();
         }
@@ -92,7 +93,7 @@ impl TracerStore {
     /// Return the most recent `limit` traces, newest first.
     /// If `fingerprint` is `Some`, only traces matching that tx_fingerprint are returned.
     pub fn snapshot(&self, limit: usize, fingerprint: Option<&str>) -> Vec<TransactionTrace> {
-        let buf = self.traces.lock().expect("tracer lock");
+        let buf = self.traces.lock();
         buf.iter()
             .rev()
             .filter(|t| fingerprint.is_none_or(|fp| t.tx_fingerprint == fp))
@@ -103,7 +104,7 @@ impl TracerStore {
 
     /// Return all unique `(tx_fingerprint, count)` pairs, sorted by count descending.
     pub fn fingerprint_counts(&self) -> Vec<(String, usize)> {
-        let buf = self.traces.lock().expect("tracer lock");
+        let buf = self.traces.lock();
         let mut map: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for t in buf.iter() {
             *map.entry(t.tx_fingerprint.clone()).or_default() += 1;

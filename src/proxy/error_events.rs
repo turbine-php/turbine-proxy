@@ -134,7 +134,7 @@ impl ErrorEvent {
 
 /// Shared store backed by a bounded ring-buffer (most recent 1 000 events).
 pub struct ErrorEventStore {
-    events: std::sync::Mutex<std::collections::VecDeque<ErrorEvent>>,
+    events: parking_lot::Mutex<std::collections::VecDeque<ErrorEvent>>,
     capacity: usize,
     pub total: AtomicUsize,
     /// Channel sender for async SQLite persistence (optional).
@@ -144,7 +144,7 @@ pub struct ErrorEventStore {
 impl ErrorEventStore {
     pub fn new(capacity: usize) -> Arc<Self> {
         Arc::new(Self {
-            events: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
+            events: parking_lot::Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
             capacity,
             total: AtomicUsize::new(0),
             persist_tx: None,
@@ -156,7 +156,7 @@ impl ErrorEventStore {
         if let Some(ref tx) = self.persist_tx {
             let _ = tx.try_send(ev.clone());
         }
-        let mut guard = self.events.lock().unwrap();
+        let mut guard = self.events.lock();
         if guard.len() >= self.capacity {
             guard.pop_front();
         }
@@ -166,14 +166,14 @@ impl ErrorEventStore {
     /// Returns the last `limit` events in reverse-chronological order.
     #[allow(dead_code)]
     pub fn list(&self, limit: usize) -> Vec<ErrorEvent> {
-        let guard = self.events.lock().unwrap();
+        let guard = self.events.lock();
         guard.iter().rev().take(limit).cloned().collect()
     }
 
     /// Returns the last `limit` events filtered by protocol (`"mysql"` or `"postgres"`).
     /// When `protocol` is `None`, returns all events.
     pub fn list_filtered(&self, limit: usize, protocol: Option<&str>) -> Vec<ErrorEvent> {
-        let guard = self.events.lock().unwrap();
+        let guard = self.events.lock();
         guard
             .iter()
             .rev()
@@ -197,7 +197,7 @@ impl ErrorEventStore {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let guard = self.events.lock().unwrap();
+        let guard = self.events.lock();
         let mut by_cat_1h: std::collections::HashMap<&str, usize> =
             std::collections::HashMap::new();
         let mut by_cat_24h: std::collections::HashMap<&str, usize> =

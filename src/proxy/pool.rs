@@ -329,6 +329,9 @@ pub struct BackendPool {
     pub replica_breakers: Vec<CircuitBreaker>,
     /// Circuit breaker for the primary backend.
     pub primary_breaker: CircuitBreaker,
+    /// Number of streaming replicas discovered via `pg_stat_replication` on the
+    /// PostgreSQL primary.  Always 0 for MySQL pools (set only by PgHealthChecker).
+    pub pg_discovered_replicas: AtomicUsize,
 }
 
 impl BackendPool {
@@ -432,6 +435,7 @@ impl BackendPool {
                 .map(|_| CircuitBreaker::new(cb_threshold, cb_recovery_ms))
                 .collect(),
             primary_breaker: CircuitBreaker::new(cb_threshold, cb_recovery_ms),
+            pg_discovered_replicas: AtomicUsize::new(0),
         }
     }
 
@@ -487,6 +491,11 @@ impl BackendPool {
             if idx < self.replicas.len() {
                 return self.replicas[idx].get_for_database(database).await;
             }
+        }
+        // Circuit breaker gate — only for the configured primary (GR / failover
+        // replicas acting as primary are not subject to the primary CB).
+        if !self.primary_breaker.allows() {
+            anyhow::bail!("[CB] primary circuit breaker is open — connection refused");
         }
         self.primary.get_for_database(database).await
     }

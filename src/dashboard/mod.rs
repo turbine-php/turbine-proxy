@@ -10,8 +10,10 @@ pub mod routes;
 pub mod routes_config;
 pub mod routes_errors;
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -40,8 +42,28 @@ use crate::proxy::server::ProxyMetrics;
 use crate::proxy::tracer::TracerStore;
 use crate::proxy::user_registry::UserRegistry;
 
-/// In-memory set of valid session tokens.
-pub type TokenStore = Arc<Mutex<HashSet<String>>>;
+/// Role attached to a dashboard session token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenRole {
+    /// Full access — can read and modify config.
+    Admin,
+    /// Read-only access — blocked from POST/PUT/DELETE endpoints.
+    ReadOnly,
+}
+
+/// Entry stored per hashed token.
+pub struct TokenEntry {
+    /// `None` = never expires.
+    pub expires_at: Option<std::time::Instant>,
+    pub role: TokenRole,
+}
+
+/// In-memory map of hashed token → entry (TTL + role).
+pub type TokenStore = Arc<Mutex<HashMap<String, TokenEntry>>>;
+
+/// Per-IP login attempt tracking for rate limiting.
+/// Key = IP string, Value = (attempt_count, window_start).
+pub type RateLimitStore = Arc<Mutex<HashMap<String, (u32, std::time::Instant)>>>;
 
 /// Hash a raw session token with SHA-256 before storing in memory.
 /// A memory dump of the process will not yield usable session tokens.
@@ -73,8 +95,17 @@ pub struct AppState {
     /// Dashboard credentials (empty = auth disabled).
     pub dashboard_username: String,
     pub dashboard_password: String,
-    /// Active session tokens (random UUID strings).
+    /// Optional read-only credentials (empty = disabled).
+    pub dashboard_readonly_username: String,
+    pub dashboard_readonly_password: String,
+    /// Session token TTL (0 = never expires).
+    pub token_ttl_secs: u64,
+    /// Max failed login attempts per IP per minute.
+    pub login_max_attempts: u32,
+    /// Active session tokens (hashed token → entry).
     pub tokens: TokenStore,
+    /// Per-IP login attempt tracker for rate limiting.
+    pub rate_limits: RateLimitStore,
     /// Path to the config file — used by the reload endpoint.
     pub config_path: String,
     /// The proxy router — used to hot-swap the backend pool via /api/reload/backends.
@@ -82,7 +113,7 @@ pub struct AppState {
     /// PostgreSQL proxy router — present when pgsql proxy is enabled.
     pub pg_proxy_router: Option<ProxyRouter>,
     /// The full proxy config — used by /api/reload/backends to rebuild the pool.
-    pub proxy_config: Arc<std::sync::RwLock<ProxyConfig>>,
+    pub proxy_config: Arc<parking_lot::RwLock<ProxyConfig>>,
     /// Unix timestamp of the last successful config reload (0 = never reloaded).
     pub last_reload_secs: Arc<std::sync::atomic::AtomicU64>,
     /// Counter of queries killed by `max_query_time_ms` (from the router).
@@ -123,6 +154,7 @@ pub fn build_router(state: AppState) -> Router {
     // Protected API endpoints
     let protected = Router::new()
         .route("/api/logout", post(routes::logout))
+        .route("/api/auth/refresh", post(routes::refresh_token))
         .route("/api/stats", get(routes::stats))
         .route("/api/capabilities", get(routes::capabilities))
         .route("/api/queries", get(routes::queries))
@@ -237,15 +269,44 @@ async fn auth_middleware(
         .unwrap_or("");
 
     let hashed = token_hash(token);
-    let valid = {
-        let store = state.tokens.lock().unwrap();
-        store.contains(&hashed)
+    let now = std::time::Instant::now();
+    let role = {
+        let store = state.tokens.lock();
+        store.get(&hashed).and_then(|entry| {
+            // Reject expired tokens
+            if entry.expires_at.is_some_and(|exp| exp <= now) {
+                None
+            } else {
+                Some(entry.role)
+            }
+        })
     };
 
-    if valid {
-        next.run(req).await
-    } else {
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+    match role {
+        None => {
+            state
+                .metrics
+                .dashboard_auth_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        }
+        Some(TokenRole::ReadOnly) => {
+            // Read-only tokens are blocked from all mutating requests except logout.
+            let is_mutating = !matches!(
+                req.method(),
+                &axum::http::Method::GET | &axum::http::Method::HEAD | &axum::http::Method::OPTIONS
+            );
+            let is_logout = req.uri().path() == "/api/logout";
+            if is_mutating && !is_logout {
+                return (
+                    StatusCode::FORBIDDEN,
+                    "Admin access required for write operations",
+                )
+                    .into_response();
+            }
+            next.run(req).await
+        }
+        Some(TokenRole::Admin) => next.run(req).await,
     }
 }
 
@@ -269,9 +330,37 @@ async fn no_cache_html(req: Request, next: Next) -> Response {
 
 /// Start the dashboard server on the given address.
 pub async fn run(addr: &str, state: AppState) -> anyhow::Result<()> {
+    // Spawn token + rate-limit sweeper (every 60 s)
+    {
+        let tokens = state.tokens.clone();
+        let rate_limits = state.rate_limits.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let now = std::time::Instant::now();
+                // Evict expired tokens
+                tokens
+                    .lock()
+                    .retain(|_, entry| entry.expires_at.map(|exp| exp > now).unwrap_or(true));
+                // Evict rate-limit windows older than 5 min
+                let cutoff = now
+                    .checked_sub(std::time::Duration::from_secs(300))
+                    .unwrap_or(now);
+                rate_limits
+                    .lock()
+                    .retain(|_, (_, window_start)| *window_start > cutoff);
+            }
+        });
+    }
+
     let router = build_router(state);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Dashboard listening on http://{}", addr);
-    axum::serve(listener, router).await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }

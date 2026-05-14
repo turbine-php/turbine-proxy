@@ -1,9 +1,8 @@
 //! SQLite persistence for analytics data.
 //! `flush` must be called from a blocking context (e.g., `tokio::task::spawn_blocking`).
 
-use std::sync::Mutex;
-
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 
 use super::collector::QueryStats;
@@ -40,7 +39,7 @@ impl AnalyticsStorage {
     /// Flush a batch of in-memory stats to SQLite.
     /// Increments existing rows so history accumulates across flushes.
     pub fn flush(&self, stats: &[QueryStats]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare_cached(
@@ -81,7 +80,7 @@ impl AnalyticsStorage {
     // TODO: used by dashboard /api/queries endpoint
     #[allow(dead_code)]
     pub fn get_top_by_count(&self, limit: usize) -> Result<Vec<StoredQueryStats>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT fingerprint_hash, fingerprint, count, total_us, min_us, max_us,
                     p95_us, p99_us, last_seen
@@ -95,7 +94,7 @@ impl AnalyticsStorage {
     // TODO: used by dashboard /api/slow-queries endpoint
     #[allow(dead_code)]
     pub fn get_top_by_p95(&self, limit: usize) -> Result<Vec<StoredQueryStats>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT fingerprint_hash, fingerprint, count, total_us, min_us, max_us,
                     p95_us, p99_us, last_seen
@@ -109,7 +108,7 @@ impl AnalyticsStorage {
     /// Returns the sum of all `count` rows — used at startup to restore the
     /// in-memory `queries_total` counter so it doesn't reset on restart.
     pub fn load_total_query_count(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let n: i64 = conn
             .query_row("SELECT COALESCE(SUM(count), 0) FROM query_stats", [], |r| {
                 r.get(0)

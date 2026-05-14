@@ -733,6 +733,22 @@ pub struct DashboardConfig {
     /// Dashboard admin password. If empty, auth is disabled.
     #[serde(default)]
     pub password: String,
+
+    /// Optional read-only username. Empty = no read-only user.
+    #[serde(default)]
+    pub readonly_username: String,
+
+    /// Optional read-only password. Empty = no read-only user.
+    #[serde(default)]
+    pub readonly_password: String,
+
+    /// Session token TTL in seconds. 0 = never expires. Default: 86400 (24 h).
+    #[serde(default = "default_token_ttl_secs")]
+    pub token_ttl_secs: u64,
+
+    /// Max login attempts per IP per minute before rate-limiting. Default: 5.
+    #[serde(default = "default_login_max_attempts")]
+    pub login_max_attempts: u32,
 }
 
 impl Default for DashboardConfig {
@@ -742,8 +758,20 @@ impl Default for DashboardConfig {
             listen_addr: default_dashboard_addr(),
             username: String::new(),
             password: String::new(),
+            readonly_username: String::new(),
+            readonly_password: String::new(),
+            token_ttl_secs: default_token_ttl_secs(),
+            login_max_attempts: default_login_max_attempts(),
         }
     }
+}
+
+fn default_token_ttl_secs() -> u64 {
+    86400
+}
+
+fn default_login_max_attempts() -> u32 {
+    5
 }
 
 /// A single query rewriting rule.

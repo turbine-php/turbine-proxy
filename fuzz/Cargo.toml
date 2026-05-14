@@ -1,0 +1,24 @@
+[package]
+name = "turbineproxy-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Share the helpers under test — include the parent as a path dep so fuzz
+# targets can call the same internal functions as the unit tests.
+turbineproxy = { path = "..", features = [] }
+
+# Prevent this from interfering with workspace lockfile resolution.
+[workspace]
+
+[[bin]]
+name = "fuzz_scram_parser"
+path = "fuzz_targets/fuzz_scram_parser.rs"
+test = false
+doc = false

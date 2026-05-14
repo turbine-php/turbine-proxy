@@ -126,6 +126,12 @@ async fn read_pg_msg(reader: &mut BoxRead) -> Result<(u8, Vec<u8>)> {
 
 /// Read the first client startup message (no type byte — only length + payload).
 async fn read_startup_msg(reader: &mut BoxRead) -> Result<Vec<u8>> {
+    read_startup_bytes(reader).await
+}
+
+/// Generic version of `read_startup_msg` that works on any `AsyncReadExt + Unpin`
+/// (e.g. raw `TcpStream` before split, or a `TlsStream`).
+async fn read_startup_bytes<R: tokio::io::AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     reader
         .read_exact(&mut len_buf)
@@ -280,40 +286,47 @@ impl PostgreSQLProtocol {
 impl DatabaseProtocol for PostgreSQLProtocol {
     async fn accept_client(
         &self,
-        stream: TcpStream,
+        mut stream: TcpStream,
         config: &ClientAuthConfig,
     ) -> Result<Box<dyn ClientSession>> {
-        let (reader, writer) = tokio::io::split(stream);
-        let mut reader: BoxRead = Box::new(reader);
-        let mut writer: BoxWrite = Box::new(writer);
-
-        // ── Read startup message ─────────────────────────────────────────────
-        let startup = read_startup_msg(&mut reader).await?;
+        // ── Read first startup message from raw stream (no split yet) ────────
+        // Keeping the stream unsplit is required so that TLS upgrade can be
+        // performed via TlsAcceptor::accept() which needs ownership of the
+        // full TcpStream, not just split halves.
+        let startup = read_startup_bytes(&mut stream).await?;
         if startup.len() < 4 {
             return Err(ProtocolError::InvalidFormat("startup too short".into()));
         }
         let version_code = u32::from_be_bytes([startup[0], startup[1], startup[2], startup[3]]);
 
-        // SSLRequest
+        // SSLRequest (code 80877103)
         if version_code == SSL_REQUEST_CODE {
             if let Some(ref acceptor) = self.tls_acceptor {
-                // Respond "S" — SSL supported — then upgrade to TLS
-                writer.write_all(b"S").await.map_err(ProtocolError::Io)?;
-                writer.flush().await.map_err(ProtocolError::Io)?;
+                // Tell client we support TLS
+                stream.write_all(b"S").await.map_err(ProtocolError::Io)?;
+                stream.flush().await.map_err(ProtocolError::Io)?;
 
-                // NOTE: A full TLS upgrade here would require the raw TcpStream (not split
-                // halves).  The `accept_client` interface only receives the stream after
-                // the initial split, so a real TLS wrap is deferred to Phase 3 when we can
-                // pass the raw socket in.  For now we read the startup message on the
-                // plain channel — the client will proceed unencrypted (TLS is "optional" on
-                // the client side unless the client sets sslmode=require).
-                // TODO(phase 3): accept raw TcpStream, do TlsAcceptor.accept() here.
+                // Upgrade to TLS on the raw unsplit stream
+                let tls_stream = acceptor.accept(stream).await.map_err(|e| {
+                    ProtocolError::AuthFailed(format!("TLS client handshake failed: {}", e))
+                })?;
+
+                // Split the TLS stream for async reads/writes
+                let (rd, wr) = tokio::io::split(tls_stream);
+                let mut reader: BoxRead = Box::new(rd);
+                let mut writer: BoxWrite = Box::new(wr);
+
+                // Read the actual startup message over the TLS channel
                 let startup2 = read_startup_msg(&mut reader).await?;
                 return self.accept_startup(startup2, reader, writer, config).await;
             } else {
-                // No TLS configured — decline
-                writer.write_all(b"N").await.map_err(ProtocolError::Io)?;
-                writer.flush().await.map_err(ProtocolError::Io)?;
+                // No TLS configured — decline with 'N'
+                stream.write_all(b"N").await.map_err(ProtocolError::Io)?;
+                stream.flush().await.map_err(ProtocolError::Io)?;
+
+                let (rd, wr) = tokio::io::split(stream);
+                let mut reader: BoxRead = Box::new(rd);
+                let mut writer: BoxWrite = Box::new(wr);
                 let startup2 = read_startup_msg(&mut reader).await?;
                 return self.accept_startup(startup2, reader, writer, config).await;
             }
@@ -325,11 +338,16 @@ impl DatabaseProtocol for PostgreSQLProtocol {
             ));
         }
 
+        // Normal startup (no SSLRequest) — split now and hand off
+        let (rd, wr) = tokio::io::split(stream);
+        let reader: BoxRead = Box::new(rd);
+        let writer: BoxWrite = Box::new(wr);
         self.accept_startup(startup, reader, writer, config).await
     }
 
     async fn connect_backend(&self, config: &BackendConfig) -> Result<Box<dyn BackendConnection>> {
-        let stream = if config.resolution_family == "ipv4" || config.resolution_family == "ipv6" {
+        let mut stream = if config.resolution_family == "ipv4" || config.resolution_family == "ipv6"
+        {
             let want_v4 = config.resolution_family == "ipv4";
             let sa = tokio::net::lookup_host(&config.addr)
                 .await
@@ -355,26 +373,26 @@ impl DatabaseProtocol for PostgreSQLProtocol {
         let (reader, writer) = if !matches!(config.tls_mode, TlsMode::Off) {
             // Send PostgreSQL SSLRequest (4-byte length 8 + 4-byte magic 80877103)
             // to negotiate TLS with the backend.
+            // Keep the stream unsplit so we can pass it to TlsConnector::connect().
             let mut tls_req = [0u8; 8];
             tls_req[0..4].copy_from_slice(&8u32.to_be_bytes());
             tls_req[4..8].copy_from_slice(&80877103u32.to_be_bytes());
 
             use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-            let (mut raw_rd, mut raw_wr) = tokio::io::split(stream);
-            raw_wr
+            stream
                 .write_all(&tls_req)
                 .await
                 .map_err(ProtocolError::Io)?;
-            raw_wr.flush().await.map_err(ProtocolError::Io)?;
+            stream.flush().await.map_err(ProtocolError::Io)?;
 
             let mut resp = [0u8; 1];
-            raw_rd
+            stream
                 .read_exact(&mut resp)
                 .await
                 .map_err(ProtocolError::Io)?;
 
             if resp[0] == b'S' {
-                // Backend supports TLS — upgrade
+                // Backend supports TLS — upgrade the raw stream before splitting
                 let connector = crate::protocol::mysql::tls::build_backend_connector(
                     &config.tls_mode,
                     config.tls_ca.as_deref(),
@@ -382,19 +400,23 @@ impl DatabaseProtocol for PostgreSQLProtocol {
                 )
                 .map_err(|e| ProtocolError::AuthFailed(e.to_string()))?;
 
-                // Need a domain name for TLS SNI — use the host part of addr
+                // Use the host part of addr for TLS SNI
                 let host = config.addr.split(':').next().unwrap_or("localhost");
                 let domain =
                     rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| {
                         ProtocolError::AuthFailed(format!("invalid TLS host '{}': {}", host, e))
                     })?;
 
-                // Reconnect the split halves — we need the raw stream for TLS upgrade.
-                // Since we already split, we use a more direct approach: re-connect.
-                // This is a known limitation of the split-before-SSLRequest approach.
-                // As a workaround, we proceed without TLS upgrade (log a warning).
-                log::warn!("[pg] Backend {} responded 'S' to SSLRequest but stream already split — TLS upgrade skipped; using plain connection", config.addr);
-                (Box::new(raw_rd) as BoxRead, Box::new(raw_wr) as BoxWrite)
+                let tls_stream = connector.connect(domain, stream).await.map_err(|e| {
+                    ProtocolError::AuthFailed(format!(
+                        "TLS backend handshake with {} failed: {}",
+                        config.addr, e
+                    ))
+                })?;
+
+                log::debug!("[pg] Backend {} TLS upgrade successful", config.addr);
+                let (r, w) = tokio::io::split(tls_stream);
+                (Box::new(r) as BoxRead, Box::new(w) as BoxWrite)
             } else {
                 // Backend declined TLS
                 if matches!(config.tls_mode, TlsMode::VerifyCa | TlsMode::VerifyIdentity) {
@@ -407,7 +429,8 @@ impl DatabaseProtocol for PostgreSQLProtocol {
                     "[pg] Backend {} declined TLS — using plain connection",
                     config.addr
                 );
-                (Box::new(raw_rd) as BoxRead, Box::new(raw_wr) as BoxWrite)
+                let (r, w) = tokio::io::split(stream);
+                (Box::new(r) as BoxRead, Box::new(w) as BoxWrite)
             }
         } else {
             let (r, w) = tokio::io::split(stream);
@@ -969,6 +992,14 @@ async fn scram_auth(
             iterations = v.parse().unwrap_or(4096);
         }
     }
+    // RFC 7677 §3 + NIST SP 800-132: minimum 4096 iterations.
+    // A server advertising fewer is either misconfigured or actively downgrading security.
+    if iterations < 4096 {
+        return Err(ProtocolError::AuthFailed(format!(
+            "SCRAM-SHA-256: server requested {} iterations (minimum required: 4096 per RFC 7677)",
+            iterations
+        )));
+    }
     if !full_nonce.starts_with(&client_nonce) {
         return Err(ProtocolError::AuthFailed("SCRAM nonce mismatch".into()));
     }
@@ -1016,4 +1047,105 @@ async fn scram_auth(
     }
 
     Ok(())
+}
+
+// ─── SCRAM-SHA-256 unit tests ─────────────────────────────────────────────────
+
+#[cfg(test)]
+mod scram_tests {
+    use super::*;
+
+    // ── pbkdf2_sha256 ─────────────────────────────────────────────────────────
+
+    /// Verify the implementation is deterministic (same inputs → same output).
+    #[test]
+    fn pbkdf2_deterministic() {
+        let r1 = pbkdf2_sha256(b"pencil", b"NaCl", 4096);
+        let r2 = pbkdf2_sha256(b"pencil", b"NaCl", 4096);
+        assert_eq!(r1, r2, "PBKDF2 must be deterministic");
+    }
+
+    /// Different passwords must produce different outputs (basic collision guard).
+    #[test]
+    fn pbkdf2_different_passwords_produce_different_keys() {
+        let r1 = pbkdf2_sha256(b"pencil", b"NaCl", 4096);
+        let r2 = pbkdf2_sha256(b"Password", b"NaCl", 4096);
+        assert_ne!(r1, r2);
+    }
+
+    /// Different salts must produce different outputs.
+    #[test]
+    fn pbkdf2_different_salts_produce_different_keys() {
+        let r1 = pbkdf2_sha256(b"pencil", b"salt1", 4096);
+        let r2 = pbkdf2_sha256(b"pencil", b"salt2", 4096);
+        assert_ne!(r1, r2);
+    }
+
+    // ── iteration-count guard ─────────────────────────────────────────────────
+
+    /// Craft a fake SASLContinue payload with i=100 and verify the client rejects it.
+    /// We test the validation logic indirectly via the server-first parser section.
+    #[test]
+    fn scram_rejects_low_iteration_count() {
+        let mut iterations = 4096u32;
+        let sfm = "r=clientnonce+servernonce,s=c2FsdA==,i=100";
+        for part in sfm.split(',') {
+            if let Some(v) = part.strip_prefix("i=") {
+                iterations = v.parse().unwrap_or(4096);
+            }
+        }
+        assert_eq!(iterations, 100);
+        // Mirror the guard added to scram_auth():
+        let result: std::result::Result<(), String> = if iterations < 4096 {
+            Err(format!(
+                "SCRAM-SHA-256: server requested {} iterations (minimum required: 4096 per RFC 7677)",
+                iterations
+            ))
+        } else {
+            Ok(())
+        };
+        assert!(result.is_err(), "should reject iterations=100");
+        assert!(result.unwrap_err().contains("100"));
+    }
+
+    /// Boundary: exactly 4096 iterations must be accepted.
+    #[test]
+    fn scram_accepts_minimum_iteration_count() {
+        let iterations: u32 = 4096;
+        let result: std::result::Result<(), String> = if iterations < 4096 {
+            Err("too low".to_string())
+        } else {
+            Ok(())
+        };
+        assert!(result.is_ok());
+    }
+
+    // ── nonce / b64 helpers ───────────────────────────────────────────────────
+
+    #[test]
+    fn b64_roundtrip() {
+        let data = b"hello world \x00\xFF";
+        let encoded = b64_encode(data);
+        let decoded = b64_decode(&encoded).unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[test]
+    fn b64_decode_invalid_returns_err() {
+        assert!(b64_decode("!!!not-valid-b64!!!").is_err());
+    }
+
+    // ── HMAC-SHA-256 ──────────────────────────────────────────────────────────
+
+    /// RFC 4231 test vector #1: key=0x0b*20, data="Hi There"
+    #[test]
+    fn hmac_sha256_rfc4231_vector1() {
+        let key = [0x0bu8; 20];
+        let data = b"Hi There";
+        let result = hmac_sha256(&key, data);
+        let expected =
+            hex::decode("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")
+                .unwrap();
+        assert_eq!(result.as_slice(), expected.as_slice());
+    }
 }

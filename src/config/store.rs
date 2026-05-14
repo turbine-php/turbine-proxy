@@ -4,9 +4,8 @@
 //! it is the source of truth for query_rules, rewrite_rules, backends and users.
 //! The TOML file continues to own infra settings (listen_addr, TLS, cluster).
 
-use std::sync::Mutex;
-
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -191,7 +190,7 @@ impl ConfigStore {
         replicas: &[BackendConfig],
         users: &[UserConfig],
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
 
         let rules_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM config_rules", [], |r| r.get(0))?;
@@ -285,7 +284,7 @@ impl ConfigStore {
     // ── Query Rules ───────────────────────────────────────────────────────────
 
     pub fn list_rules(&self) -> Result<Vec<RuleRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id,priority,match_pattern,match_digest,user,schema_name,
                     destination,destination_hostgroup,cache_ttl_secs,
@@ -314,7 +313,7 @@ impl ConfigStore {
     }
 
     pub fn create_rule(&self, row: &RuleRow, author_ip: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO config_rules
              (priority,match_pattern,match_digest,user,schema_name,
@@ -351,7 +350,7 @@ impl ConfigStore {
 
     pub fn update_rule(&self, id: i64, row: &RuleRow, author_ip: &str) -> Result<()> {
         let before = self.get_rule(id)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "UPDATE config_rules SET
                priority=?1, match_pattern=?2, match_digest=?3, user=?4,
@@ -392,7 +391,7 @@ impl ConfigStore {
 
     pub fn delete_rule(&self, id: i64, author_ip: &str) -> Result<()> {
         let before = self.get_rule(id)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute("DELETE FROM config_rules WHERE id=?1", params![id])?;
         Self::log_change_inner(
             &conn,
@@ -410,7 +409,7 @@ impl ConfigStore {
     }
 
     pub fn get_rule(&self, id: i64) -> Result<Option<RuleRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id,priority,match_pattern,match_digest,user,schema_name,
                     destination,destination_hostgroup,cache_ttl_secs,
@@ -440,7 +439,7 @@ impl ConfigStore {
     // ── Rewrite Rules ─────────────────────────────────────────────────────────
 
     pub fn list_rewrite_rules(&self) -> Result<Vec<RewriteRuleRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id,priority,match_pattern,replace_with,add_limit,
                     add_timeout_ms,block,comment,enabled
@@ -464,7 +463,7 @@ impl ConfigStore {
     }
 
     pub fn create_rewrite_rule(&self, row: &RewriteRuleRow, author_ip: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO config_rewrite_rules
              (priority,match_pattern,replace_with,add_limit,add_timeout_ms,block,comment,enabled)
@@ -500,7 +499,7 @@ impl ConfigStore {
         author_ip: &str,
     ) -> Result<()> {
         let before = self.get_rewrite_rule(id)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "UPDATE config_rewrite_rules SET
                priority=?1, match_pattern=?2, replace_with=?3, add_limit=?4,
@@ -535,7 +534,7 @@ impl ConfigStore {
 
     pub fn delete_rewrite_rule(&self, id: i64, author_ip: &str) -> Result<()> {
         let before = self.get_rewrite_rule(id)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute("DELETE FROM config_rewrite_rules WHERE id=?1", params![id])?;
         Self::log_change_inner(
             &conn,
@@ -553,7 +552,7 @@ impl ConfigStore {
     }
 
     pub fn get_rewrite_rule(&self, id: i64) -> Result<Option<RewriteRuleRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id,priority,match_pattern,replace_with,add_limit,
                     add_timeout_ms,block,comment,enabled
@@ -582,7 +581,7 @@ impl ConfigStore {
     }
 
     pub fn list_backends_by_protocol(&self, protocol: &str) -> Result<Vec<BackendRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id,addr,user,password,database,role,weight,backup,tls_mode,enabled
              FROM config_backends
@@ -619,7 +618,7 @@ impl ConfigStore {
     ) -> Result<i64> {
         let enc_key = secret::load_encryption_key();
         let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO config_backends
              (protocol,addr,user,password,database,role,weight,backup,tls_mode,enabled)
@@ -665,7 +664,7 @@ impl ConfigStore {
     ) -> Result<()> {
         let enc_key = secret::load_encryption_key();
         let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "UPDATE config_backends SET
                addr=?1, user=?2, password=?3, database=?4, role=?5,
@@ -708,7 +707,7 @@ impl ConfigStore {
         author_ip: &str,
         protocol: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM config_backends WHERE id=?1 AND protocol=?2",
             params![id, protocol],
@@ -720,7 +719,7 @@ impl ConfigStore {
     // ── Users ─────────────────────────────────────────────────────────────────
 
     pub fn list_users(&self) -> Result<Vec<UserRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id,name,password,allow_writes,max_connections,enabled
              FROM config_users ORDER BY name",
@@ -742,7 +741,7 @@ impl ConfigStore {
     pub fn create_user(&self, row: &UserRow, author_ip: &str) -> Result<i64> {
         let enc_key = secret::load_encryption_key();
         let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO config_users (name,password,allow_writes,max_connections,enabled)
              VALUES (?1,?2,?3,?4,?5)",
@@ -771,7 +770,7 @@ impl ConfigStore {
     pub fn update_user(&self, id: i64, row: &UserRow, author_ip: &str) -> Result<()> {
         let enc_key = secret::load_encryption_key();
         let stored_pw = secret::prepare_for_storage(&row.password, enc_key.as_ref());
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "UPDATE config_users SET
                name=?1, password=?2, allow_writes=?3, max_connections=?4, enabled=?5
@@ -799,7 +798,7 @@ impl ConfigStore {
     }
 
     pub fn delete_user(&self, id: i64, author_ip: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute("DELETE FROM config_users WHERE id=?1", params![id])?;
         Self::log_change_inner(&conn, "user", Some(id), "delete", None, None, author_ip)?;
         Ok(())
@@ -808,7 +807,7 @@ impl ConfigStore {
     // ── Config history ────────────────────────────────────────────────────────
 
     pub fn list_changes(&self, limit: i64) -> Result<Vec<ChangeRow>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT id,ts,entity,entity_id,action,before_json,after_json,author_ip
              FROM config_changes ORDER BY id DESC LIMIT ?1",
@@ -1009,7 +1008,7 @@ impl ConfigStore {
         users: &[UserConfig],
         author_ip: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
 
         conn.execute_batch(
             "

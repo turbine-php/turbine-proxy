@@ -231,6 +231,20 @@ listen_addr = "0.0.0.0:8080"
 username = ""
 password = ""
 
+# Optional read-only user: can view all panels but cannot create/update/delete
+# routing rules, rewrite rules, or backends. Leave empty to disable.
+# readonly_username = ""
+# readonly_password = ""
+
+# Session token lifetime in seconds. Tokens are stored as SHA-256 hashes in
+# memory. A background sweeper evicts expired tokens every 60 s.
+# 0 = tokens never expire.  Default: 86400 (24 h).
+# token_ttl_secs = 86400
+
+# Maximum failed login attempts per source IP within a 60-second window before
+# the endpoint returns HTTP 429. 0 = disabled.  Default: 5.
+# login_max_attempts = 5
+
 # ── High-availability & health checks ────────────────────────────────────────
 [ha]
 enabled = true

@@ -86,6 +86,23 @@ fn is_connection_lost(e: &anyhow::Error) -> bool {
         || msg.contains("2013")
 }
 
+/// Replay session-init SQLs on a fresh backend connection.
+///
+/// Called in the non-transaction multiplexing path (Fase A): each query may
+/// land on a different pooled backend connection, so SET NAMES, SET SESSION
+/// var=literal, and similar replayable statements must be re-applied before
+/// executing the actual query.  Errors are logged but do not fail the query.
+async fn replay_session_vars(
+    conn: &mut Box<dyn crate::protocol::BackendConnection>,
+    init_sqls: &[String],
+) {
+    for sql in init_sqls {
+        if let Err(e) = conn.execute_query(sql.as_bytes()).await {
+            log::warn!("[multiplex] replay '{}' failed: {}", sql, e);
+        }
+    }
+}
+
 /// Routes queries to the appropriate backend (primary or replica).
 /// One `Router` per `ProxyServer` — cloned cheaply via the inner `Arc`s.
 ///
@@ -492,6 +509,10 @@ impl Router {
 
         if effective_replica {
             let (mut conn, replica_idx) = pool.get_replica_for_database(database).await?;
+            // Fase A multiplexing: replay session init SQLs on every fresh
+            // connection. Each query may land on a different backend connection;
+            // SET NAMES, SET SESSION var=... must be re-applied for correctness.
+            replay_session_vars(&mut conn, session_init_sqls).await;
             let response = match if timeout_ms > 0 {
                 self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms)
                     .await
@@ -514,6 +535,7 @@ impl Router {
                         drop(conn); // discard dead connection (not returned to pool)
                         let (mut fresh, fresh_idx) =
                             pool.get_replica_for_database(database).await?;
+                        replay_session_vars(&mut fresh, session_init_sqls).await;
                         let r = fresh
                             .execute_query(sql_bytes_to_use)
                             .await
@@ -557,6 +579,9 @@ impl Router {
         } else {
             // Write path — execute on primary, then invalidate affected tables.
             let mut conn = pool.get_primary_for_database(database).await?;
+            // Fase A multiplexing: replay session init SQLs on the fresh primary
+            // connection so SET NAMES / SET SESSION vars take effect.
+            replay_session_vars(&mut conn, session_init_sqls).await;
             let response = match if timeout_ms > 0 {
                 self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms)
                     .await
@@ -574,6 +599,7 @@ impl Router {
                         );
                         drop(conn);
                         let mut fresh = pool.get_primary_for_database(database).await?;
+                        replay_session_vars(&mut fresh, session_init_sqls).await;
                         let r = fresh
                             .execute_query(sql_bytes_to_use)
                             .await

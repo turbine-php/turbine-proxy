@@ -534,7 +534,7 @@ async fn apply_pg_backends(s: &AppState) -> anyhow::Result<()> {
     let primary = primary.ok_or_else(|| anyhow::anyhow!("pgsql requires one primary backend"))?;
 
     let (pg_pool_size, pg_idle_secs) = {
-        let mut cfg = s.proxy_config.write().unwrap();
+        let mut cfg = s.proxy_config.write();
         if !cfg.pgsql.enabled {
             return Err(anyhow::anyhow!("pgsql.enabled is false in current config"));
         }
@@ -573,7 +573,7 @@ async fn apply_mysql_backends(s: &AppState) -> anyhow::Result<()> {
     let primary = primary.ok_or_else(|| anyhow::anyhow!("mysql requires one primary backend"))?;
 
     let (pool_size, idle_secs) = {
-        let mut cfg = s.proxy_config.write().unwrap();
+        let mut cfg = s.proxy_config.write();
         cfg.primary = primary.clone();
         cfg.replicas = replicas.clone();
         (cfg.pool_size, cfg.connection_max_idle_secs)

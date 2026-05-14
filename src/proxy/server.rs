@@ -134,6 +134,11 @@ pub struct ProxyMetrics {
     pub sqli_blocked: AtomicUsize,
     /// Number of queries rejected by the whitelist (allowlist mode).
     pub whitelist_blocked: AtomicUsize,
+    /// Sessions that became sticky (user-defined variable or LOCK TABLES).
+    /// Sticky sessions cannot multiplex backend connections.
+    pub sessions_pinned_total: AtomicUsize,
+    /// Total failed dashboard authentication attempts (wrong credentials or expired tokens).
+    pub dashboard_auth_failures: AtomicUsize,
 }
 
 impl ProxyMetrics {
@@ -150,6 +155,8 @@ impl ProxyMetrics {
             queries_killed: AtomicUsize::new(0),
             sqli_blocked: AtomicUsize::new(0),
             whitelist_blocked: AtomicUsize::new(0),
+            sessions_pinned_total: AtomicUsize::new(0),
+            dashboard_auth_failures: AtomicUsize::new(0),
         }
     }
 }
@@ -813,21 +820,29 @@ async fn handle_connection(
                 // (SET @@session.x), SET NAMES, SET CHARACTER SET.
                 // Once triggered we must keep using the same backend connection
                 // because these settings are connection-scoped on MySQL.
-                if is_session_pinning_query(sql) {
-                    if !user_var_sticky {
-                        user_var_sticky = true;
-                        log::debug!(
-                            "[conn {}] session-pinning SET detected — enabling sticky connection",
-                            conn_id
-                        );
-                    }
-                    // Record the statement so it can be re-applied if the sticky
-                    // connection is later replaced (e.g. after a transaction kill
-                    // or pool swap).  Avoid duplicates to keep the list compact.
+                // ── Session-state detection (Fase A multiplexing) ────────────────
+                // Hard-pin only when session state cannot be replayed:
+                //   @user_var assignment, SELECT @var :=, LOCK TABLES.
+                // Replayable SET statements (SET NAMES, SET CHARACTER SET,
+                // SET SESSION var=literal) go into session_init_sqls without
+                // pinning — the router replays them on every fresh connection.
+                let hard_pin = needs_hard_pin(sql);
+                let replayable = !hard_pin && is_replayable_session_stmt(sql);
+                if hard_pin || replayable {
                     let owned = sql.to_string();
                     if !session_init_sqls.contains(&owned) {
                         session_init_sqls.push(owned);
                     }
+                }
+                if hard_pin && !user_var_sticky {
+                    user_var_sticky = true;
+                    metrics
+                        .sessions_pinned_total
+                        .fetch_add(1, Ordering::Relaxed);
+                    log::debug!(
+                        "[conn {}] [multiplex] session pinned: user-var / LOCK TABLES — multiplexing disabled",
+                        conn_id
+                    );
                 }
 
                 // Update client-side transaction state for routing decisions.
@@ -1269,10 +1284,10 @@ async fn handle_connection(
                             for (name, value) in &response.session_changes {
                                 let set_stmt = format!("SET SESSION {}={:?}", name, value);
                                 if !session_init_sqls.contains(&set_stmt) {
+                                    // session_track changes are always replayable system
+                                    // variables — add to init_sqls but do NOT pin the
+                                    // session. The router will replay them on fresh conns.
                                     session_init_sqls.push(set_stmt);
-                                    if !user_var_sticky {
-                                        user_var_sticky = true;
-                                    }
                                 }
                             }
                             log::debug!(
@@ -1706,59 +1721,105 @@ async fn parse_proxy_v1(stream: &mut TcpStream) -> Option<String> {
 /// session: the assigned variables / charset are connection-scoped on MySQL and
 /// would be lost if the connection were handed back to the pool and re-used by
 /// another session.
-fn is_session_pinning_query(sql: &str) -> bool {
+/// Returns `true` for statements that create session state that **cannot** be
+/// replayed on a fresh backend connection:
+/// - User-defined variable assignments (`SET @var = …`, `SELECT @var := …`)
+/// - `LOCK TABLES` (connection-scoped lock)
+///
+/// These sessions must use a sticky backend connection (multiplexing disabled).
+fn needs_hard_pin(sql: &str) -> bool {
     let upper = sql.trim_start().to_uppercase();
 
-    // ── User-defined variables (@var) ─────────────────────────────────────────
-    if upper.contains('@') {
-        // SET @var = ... / SET @var := ...
-        if upper.starts_with("SET") && upper.contains('@') {
-            return true;
-        }
-        // SELECT @var := ... (user-defined variable assignment in SELECT)
-        if upper.contains(":=") && upper.contains('@') {
-            return true;
-        }
-        // SET @@session.x = ... / SET @@global.x = ...
-        if upper.starts_with("SET") && upper.contains("@@") {
-            return true;
-        }
+    // SET @user_var = ... (user variables — value type unknown at replay time)
+    if upper.starts_with("SET") && upper.contains('@') && !upper.contains("@@") {
+        return true;
     }
-
-    // ── Session character set / collation ─────────────────────────────────────
-    if upper.starts_with("SET") {
-        let rest = upper.trim_start_matches("SET").trim_start();
-        if rest.starts_with("NAMES")
-            || rest.starts_with("CHARACTER SET")
-            || rest.starts_with("CHARSET")
-        {
-            return true;
-        }
-
-        // ── Other session-scoped variables that must stay on the same conn ────
-        // time_zone, sql_mode, autocommit, sql_safe_updates, foreign_key_checks,
-        // unique_checks, group_concat_max_len, etc.
-        // We pin any bare `SET <word> =` that isn't a global variable.
-        let var_name = rest
-            .trim_start_matches("SESSION")
-            .trim_start()
-            .trim_start_matches("LOCAL")
-            .trim_start();
-        // Match: SET [SESSION|LOCAL] <identifier> = / :=
-        let first_word = var_name
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .next()
-            .unwrap_or("");
-        if !first_word.is_empty() {
-            // Anything that looks like SET <var> = counts as a session pin.
-            // Excludes: SET NAMES, SET CHARACTER SET (handled above).
-            // Excludes: already caught @var / @@var paths above.
-            let after_word = var_name[first_word.len()..].trim_start();
-            if after_word.starts_with('=') || after_word.starts_with(":=") {
-                return true;
-            }
-        }
+    // SELECT @var := ... (assignment-in-SELECT idiom)
+    if !upper.starts_with("SET") && upper.contains(":=") && upper.contains('@') {
+        return true;
+    }
+    // LOCK TABLES — connection-scoped; UNLOCK TABLES must happen on same conn.
+    if upper.starts_with("LOCK TABLES") {
+        return true;
     }
 
     false
+}
+
+/// Returns `true` for session-state-changing statements that **can** be safely
+/// replayed on any fresh backend connection:
+/// - `SET NAMES charset`
+/// - `SET CHARACTER SET charset`
+/// - `SET [SESSION|LOCAL] system_var = literal`
+/// - `SET @@session.x = …` / `SET @@global.x = …`
+///
+/// These are stored in `session_init_sqls` and replayed by the router on
+/// every new connection checkout — multiplexing is preserved.
+fn is_replayable_session_stmt(sql: &str) -> bool {
+    let upper = sql.trim_start().to_uppercase();
+    if !upper.starts_with("SET") {
+        return false;
+    }
+    // @user_var — not replayable (handled by needs_hard_pin)
+    if upper.contains('@') && !upper.contains("@@") {
+        return false;
+    }
+    // SELECT @var := — not replayable (and doesn't start with SET anyway)
+    // Everything else starting with SET is a system/session variable — replayable.
+    true
+}
+
+// ─── Panic recovery tests ─────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod panic_recovery_tests {
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+
+    /// Verify parking_lot::Mutex is not poisoned when a thread panics while
+    /// holding the lock. Subsequent acquires must succeed without unwrap hacks.
+    #[test]
+    fn parking_lot_mutex_not_poisoned_after_thread_panic() {
+        let m: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let m2 = m.clone();
+
+        let handle = std::thread::spawn(move || {
+            let _guard = m2.lock();
+            panic!("intentional panic while holding lock");
+        });
+
+        // The thread panicked — join will return Err but that is expected.
+        let _ = handle.join();
+
+        // Crucially: the next acquire must NOT panic / block.
+        // With std::sync::Mutex this would return PoisonError and require .unwrap().
+        // With parking_lot::Mutex the lock is released cleanly on drop (no poison).
+        let mut val = m.lock();
+        *val = 42;
+        assert_eq!(*val, 42, "parking_lot mutex usable after thread panic");
+    }
+
+    /// Verify parking_lot::RwLock is not poisoned after a writer thread panics.
+    #[test]
+    fn parking_lot_rwlock_not_poisoned_after_writer_panic() {
+        use parking_lot::RwLock;
+
+        let rw: Arc<RwLock<String>> = Arc::new(RwLock::new("initial".to_string()));
+        let rw2 = rw.clone();
+
+        let handle = std::thread::spawn(move || {
+            let _guard = rw2.write();
+            panic!("intentional panic while holding write lock");
+        });
+
+        let _ = handle.join();
+
+        // Must succeed without any poison check.
+        let val = rw.read();
+        assert_eq!(*val, "initial");
+        drop(val);
+
+        *rw.write() = "updated".to_string();
+        assert_eq!(*rw.read(), "updated");
+    }
 }

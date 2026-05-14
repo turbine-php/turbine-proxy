@@ -1,0 +1,99 @@
+name: Chaos Tests
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or tag to test"
+        required: false
+        default: "main"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  chaos:
+    name: Chaos Testing Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ── Build proxy binary first (used by chaos_tests as CARGO_BIN_EXE_*) ──
+      - name: Build turbineproxy binary
+        run: cargo build --bin turbineproxy
+
+      # ── Start chaos stack ─────────────────────────────────────────────────
+      - name: Start chaos docker-compose stack
+        run: |
+          docker compose -f docker-compose.chaos.yml up -d \
+            mysql-primary mysql-replica1 mysql-replica2 toxiproxy
+
+      - name: Wait for MySQL primary
+        run: |
+          for i in $(seq 1 40); do
+            docker compose -f docker-compose.chaos.yml exec -T mysql-primary \
+              mysqladmin ping -h 127.0.0.1 -uroot -proot --silent 2>/dev/null \
+              && echo "MySQL primary ready" && break
+            echo "waiting ($i/40)..."
+            sleep 3
+          done
+
+      - name: Wait for Toxiproxy
+        run: |
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:8474/proxies && break
+            echo "waiting for toxiproxy ($i/20)..."
+            sleep 2
+          done
+
+      - name: Wire MySQL replication
+        run: |
+          docker compose -f docker-compose.chaos.yml run --rm chaos-setup
+
+      - name: Create Toxiproxy proxies
+        run: |
+          docker compose -f docker-compose.chaos.yml run --rm toxiproxy-init
+
+      - name: Verify Toxiproxy routes MySQL
+        run: |
+          mysql -h 127.0.0.1 -P 13306 -uroot -proot -e "SELECT 1" turbineproxy_test
+
+      # ── Run chaos tests ───────────────────────────────────────────────────
+      - name: Run chaos tests
+        run: |
+          cargo test --test chaos_tests -- --test-threads=1 --nocapture
+        env:
+          TOXIPROXY_API: http://127.0.0.1:8474
+          RUST_LOG: turbineproxy=info
+
+      # ── Collect logs on failure ────────────────────────────────────────────
+      - name: Collect container logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.chaos.yml logs mysql-primary   > /tmp/primary.log 2>&1 || true
+          docker compose -f docker-compose.chaos.yml logs mysql-replica1  > /tmp/replica1.log 2>&1 || true
+          docker compose -f docker-compose.chaos.yml logs mysql-replica2  > /tmp/replica2.log 2>&1 || true
+          docker compose -f docker-compose.chaos.yml logs toxiproxy       > /tmp/toxiproxy.log 2>&1 || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-logs
+          path: /tmp/*.log
+          retention-days: 7
+
+      # ── Teardown ──────────────────────────────────────────────────────────
+      - name: Teardown chaos stack
+        if: always()
+        run: docker compose -f docker-compose.chaos.yml down -v

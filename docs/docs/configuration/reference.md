@@ -370,18 +370,26 @@ retention_days = 30
 
 ```toml
 [dashboard]
-enabled     = true
-listen_addr = "0.0.0.0:8080"
-username    = ""
-password    = ""
+enabled            = true
+listen_addr        = "0.0.0.0:8080"
+username           = ""
+password           = ""
+readonly_username  = ""
+readonly_password  = ""
+token_ttl_secs     = 86400
+login_max_attempts = 5
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable the web dashboard and REST API |
 | `listen_addr` | string | `"0.0.0.0:8080"` | TCP address for the dashboard HTTP server |
-| `username` | string | `""` | Dashboard login username. Empty = no authentication |
-| `password` | string | `""` | Dashboard login password. Empty = no authentication |
+| `username` | string | `""` | Dashboard admin login username. Empty = no authentication |
+| `password` | string | `""` | Dashboard admin login password. Empty = no authentication |
+| `readonly_username` | string | `""` | Optional read-only user. Empty = disabled. Gets dashboard visibility without write access |
+| `readonly_password` | string | `""` | Password for the read-only user |
+| `token_ttl_secs` | int | `86400` | Session token lifetime in seconds. `0` = never expires. Default is 24 hours |
+| `login_max_attempts` | int | `5` | Maximum failed login attempts per source IP per minute before returning HTTP 429. `0` = disabled |
 
 ---
 

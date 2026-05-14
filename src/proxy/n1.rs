@@ -4,7 +4,8 @@
 //! so the dashboard can surface them as actionable warnings.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use serde::Serialize;
 
@@ -38,7 +39,7 @@ impl N1Store {
             return;
         }
         let now = chrono::Utc::now().to_rfc3339();
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock();
         for (hash, fp, count) in patterns {
             let entry = map.entry(*hash).or_insert_with(|| N1Pattern {
                 fingerprint: fp.clone(),
@@ -56,7 +57,7 @@ impl N1Store {
 
     /// Return all detected patterns sorted by connection count descending.
     pub fn get_all(&self) -> Vec<N1Pattern> {
-        let map = self.inner.lock().unwrap();
+        let map = self.inner.lock();
         let mut v: Vec<_> = map.values().cloned().collect();
         v.sort_by(|a, b| {
             b.connections
