@@ -822,6 +822,15 @@ impl BackendConnection for PgBackendConnection {
         self.collect_until_ready().await
     }
 
+    async fn send_raw_no_response(&mut self, packet: &[u8]) -> Result<()> {
+        self.writer
+            .write_all(packet)
+            .await
+            .map_err(ProtocolError::Io)?;
+        self.writer.flush().await.map_err(ProtocolError::Io)?;
+        Ok(())
+    }
+
     async fn ping(&mut self) -> Result<()> {
         self.execute_query(b"SELECT 1").await.map(|_| ())
     }

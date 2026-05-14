@@ -448,6 +448,14 @@ impl BackendConnection for MySQLBackendConnection {
         })
     }
 
+    async fn send_raw_no_response(&mut self, packet: &[u8]) -> Result<(), ProtocolError> {
+        self.codec.reset_sequence();
+        self.codec.buffer_packet(packet)?;
+        self.codec.flush_maybe_compressed(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
     async fn ping(&mut self) -> Result<(), ProtocolError> {
         let packet = [command::COM_PING];
         self.codec.reset_sequence();

@@ -1188,6 +1188,30 @@ impl Router {
                 let backend_id = shadow.backend_id(proxy_id).unwrap_or(proxy_id);
                 let rewritten = mysql_rewrite_stmt_id(raw, backend_id);
 
+                // COM_STMT_CLOSE and COM_STMT_SEND_LONG_DATA are fire-and-forget:
+                // MySQL sends NO response for these commands.  Calling send_raw
+                // (which reads a response) would deadlock.
+                if cmd_byte == cmd::COM_STMT_CLOSE || cmd_byte == cmd::COM_STMT_SEND_LONG_DATA {
+                    active_conn!()
+                        .send_raw_no_response(&rewritten)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    if cmd_byte == cmd::COM_STMT_CLOSE {
+                        shadow.remove(proxy_id);
+                    }
+                    // Return a synthetic empty OK so the caller has something
+                    // to write back.  The mysql client library does not actually
+                    // read a response for CLOSE/SEND_LONG_DATA, but if the
+                    // caller writes this to the client it will be harmless.
+                    return Ok(BackendResponse {
+                        bytes: vec![],
+                        affected_rows: None,
+                        is_error: false,
+                        session_changes: vec![],
+                        write_gtid: None,
+                    });
+                }
+
                 let result = active_conn!()
                     .send_raw(&rewritten)
                     .await

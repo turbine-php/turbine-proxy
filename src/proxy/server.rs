@@ -1525,9 +1525,13 @@ async fn handle_connection(
 
                 match result {
                     Ok(response) => {
-                        if let Err(e) = session.write_response(&response.bytes).await {
-                            log::debug!("Write stmt response error: {}", e);
-                            break;
+                        // COM_STMT_CLOSE / COM_STMT_SEND_LONG_DATA produce no
+                        // server response — don't write anything to the client.
+                        if !response.bytes.is_empty() {
+                            if let Err(e) = session.write_response(&response.bytes).await {
+                                log::debug!("Write stmt response error: {}", e);
+                                break;
+                            }
                         }
                     }
                     Err(e) => {
