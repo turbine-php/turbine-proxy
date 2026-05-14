@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 use crate::config::BackendConfig;
 use crate::protocol::{BackendConnection, DatabaseProtocol};
+use crate::proxy::circuit_breaker::CircuitBreaker;
 
 // ─── Pool error type ──────────────────────────────────────────────────────────
 
@@ -259,6 +260,10 @@ pub struct BackendPool {
     pub recovery_checks: AtomicUsize,
     /// Instant when the last failover was triggered (epoch secs, 0 = never).
     pub failover_triggered_at: AtomicU64,
+    /// Per-replica circuit breakers. Index matches `replicas` / `replica_health`.
+    pub replica_breakers: Vec<CircuitBreaker>,
+    /// Circuit breaker for the primary backend.
+    pub primary_breaker: CircuitBreaker,
 }
 
 impl BackendPool {
@@ -268,6 +273,26 @@ impl BackendPool {
         pool_size: usize,
         protocol: Arc<dyn DatabaseProtocol>,
         max_idle: Option<Duration>,
+    ) -> Self {
+        Self::with_circuit_breaker(
+            primary_config,
+            replica_configs,
+            pool_size,
+            protocol,
+            max_idle,
+            5,
+            10000,
+        )
+    }
+
+    pub fn with_circuit_breaker(
+        primary_config: &BackendConfig,
+        replica_configs: &[BackendConfig],
+        pool_size: usize,
+        protocol: Arc<dyn DatabaseProtocol>,
+        max_idle: Option<Duration>,
+        cb_threshold: u32,
+        cb_recovery_ms: u64,
     ) -> Self {
         let primary = ConnectionPool::with_idle_timeout(
             primary_config,
@@ -298,6 +323,11 @@ impl BackendPool {
             failover_flap_total: AtomicUsize::new(0),
             recovery_checks: AtomicUsize::new(0),
             failover_triggered_at: AtomicU64::new(0),
+            replica_breakers: replica_configs
+                .iter()
+                .map(|_| CircuitBreaker::new(cb_threshold, cb_recovery_ms))
+                .collect(),
+            primary_breaker: CircuitBreaker::new(cb_threshold, cb_recovery_ms),
         }
     }
 
@@ -409,7 +439,9 @@ impl BackendPool {
             .iter()
             .enumerate()
             .filter(|(i, r)| {
-                r.backup == backup_pass && self.replica_health[*i].healthy.load(Ordering::Relaxed)
+                r.backup == backup_pass
+                    && self.replica_health[*i].healthy.load(Ordering::Relaxed)
+                    && self.replica_breakers[*i].allows()
             })
             .map(|(i, r)| (i, r.weight.max(1)))
             .collect();

@@ -224,6 +224,24 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
     )
     .ok();
 
+    // ── Circuit breaker metrics ──────────────────────────────────────────────
+    out.push_str("\n# HELP turbineproxy_circuit_breaker_state Circuit breaker state per backend (0=closed, 1=half-open, 2=open).\n");
+    out.push_str("# TYPE turbineproxy_circuit_breaker_state gauge\n");
+    writeln!(
+        out,
+        "turbineproxy_circuit_breaker_state{{backend=\"primary\"}} {}",
+        pool.primary_breaker.state() as u8
+    )
+    .ok();
+    for (i, cb) in pool.replica_breakers.iter().enumerate() {
+        writeln!(
+            out,
+            "turbineproxy_circuit_breaker_state{{backend=\"replica_{i}\"}} {}",
+            cb.state() as u8
+        )
+        .ok();
+    }
+
     out
 }
 

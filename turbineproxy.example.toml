@@ -239,6 +239,14 @@ primary_failover_threshold = 3
 # Symmetric to primary_failover_threshold. Default: 3.
 # failover_min_recovery_checks = 3
 
+# ── Per-backend circuit breaker ──────────────────────────────────────────────
+# Opens the breaker for a backend after N consecutive errors, stopping traffic
+# until recovery_ms elapses. States: Closed → Open → HalfOpen → Closed.
+# Default threshold: 5 consecutive failures.
+# circuit_breaker_threshold = 5
+# Default recovery window: 10 000 ms (10 s).
+# circuit_breaker_recovery_ms = 10000
+
 # Galera / Percona XtraDB Cluster node-state checks.
 # When true, the health checker queries SHOW GLOBAL STATUS LIKE 'wsrep_local_state'
 # on every node. A node is only included in the read pool when wsrep_local_state = 4

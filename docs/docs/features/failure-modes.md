@@ -198,6 +198,19 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 
 ---
 
+## 16. Circuit breaker opened (per-backend)
+
+| Attribute | Detail |
+|-----------|--------|
+| **Trigger** | A backend accumulates `circuit_breaker_threshold` (default 5) consecutive query errors |
+| **Proxy action** | Moves the backend's circuit breaker to **Open** state. No connections are attempted until `circuit_breaker_recovery_ms` (default 10 000 ms) elapses. After that, one probe connection is sent (Half-Open); if it succeeds the breaker returns to Closed, if it fails the breaker re-opens. |
+| **Client sees (replica)** | No error if other replicas are healthy — traffic shifts to them. If all replicas are open, reads fall back to primary. |
+| **Client sees (primary)** | Write errors while breaker is open. Recovery is automatic after recovery window. |
+| **Observability** | `turbineproxy_circuit_breaker_state` gauge per-backend (0=closed, 1=half-open, 2=open). Log prefix `[CB]` at `WARN`/`INFO`. |
+| **Config** | `ha.circuit_breaker_threshold`, `ha.circuit_breaker_recovery_ms` |
+
+---
+
 ## Summary: degradation matrix
 
 | What fails | HA enabled | Client sees | Writes continue | Reads continue |
@@ -213,6 +226,8 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | Max connections | — | TCP RST | ❌ | ❌ |
 | Query timeout | — | Error on that query | ✅ others | ✅ others |
 | Transaction timeout | — | Error + disconnect | ❌ session killed | ❌ session killed |
+| Circuit breaker open (replica) | — | Nothing (other replicas/primary) | ✅ primary | ✅ healthy replicas |
+| Circuit breaker open (primary) | Yes | Errors until recovery probe | ❌ until half-open | ✅ replicas |
 
 ---
 
@@ -230,6 +245,7 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | `[pg conn N] backend died mid-tx` | WARN | PG transaction backend death |
 | `[conn N] client error limit reached` | WARN | Client disconnected for errors |
 | `[kill]` | INFO/WARN | Query kill (KILL QUERY sent) |
+| `[CB]` | WARN/INFO | Circuit breaker state transition |
 
 ---
 
@@ -244,3 +260,4 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | `turbineproxy_replica_lag_seconds > 30` | Sustained | Alert |
 | `[GR] WARN` log events | Rate > 3 per interval | Alert |
 | `turbineproxy_connections_active / max_connections > 0.9` | Sustained | Alert |
+| `turbineproxy_circuit_breaker_state{backend=~".+"} == 2` | Anytime (Open) | Alert |

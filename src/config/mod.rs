@@ -828,6 +828,18 @@ pub struct HaConfig {
     /// Default: false (disabled).
     #[serde(default)]
     pub galera_check: bool,
+
+    /// Circuit breaker: consecutive errors on a single backend before opening
+    /// the breaker and removing it from routing. 0 = disabled.
+    /// Default: 5.
+    #[serde(default = "default_cb_threshold")]
+    pub circuit_breaker_threshold: u32,
+
+    /// Circuit breaker: time in milliseconds to keep the breaker open before
+    /// transitioning to half-open and allowing a single probe request.
+    /// Default: 10000 (10 seconds).
+    #[serde(default = "default_cb_recovery_ms")]
+    pub circuit_breaker_recovery_ms: u64,
 }
 
 impl Default for HaConfig {
@@ -840,6 +852,8 @@ impl Default for HaConfig {
             failover_cooldown_secs: default_failover_cooldown_secs(),
             failover_min_recovery_checks: default_failover_min_recovery_checks(),
             galera_check: false,
+            circuit_breaker_threshold: default_cb_threshold(),
+            circuit_breaker_recovery_ms: default_cb_recovery_ms(),
         }
     }
 }
@@ -923,6 +937,12 @@ fn default_failover_cooldown_secs() -> u64 {
 }
 fn default_failover_min_recovery_checks() -> u32 {
     3
+}
+fn default_cb_threshold() -> u32 {
+    5
+}
+fn default_cb_recovery_ms() -> u64 {
+    10000
 }
 fn default_patroni_port() -> u16 {
     8008

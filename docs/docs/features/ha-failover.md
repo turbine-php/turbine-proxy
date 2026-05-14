@@ -179,3 +179,43 @@ View backend health in the dashboard **Backends** tab or via API:
 ```bash
 curl http://localhost:8080/api/backends | jq '.[] | {role, addr, healthy, lag_ms}'
 ```
+
+## Circuit Breaker (per-Backend)
+
+Each backend (primary + every replica) has an independent circuit breaker that prevents cascading latency when a backend is failing.
+
+### States
+
+| State | Behaviour |
+|-------|-----------|
+| **Closed** | Normal traffic. Consecutive errors are counted. |
+| **Open** | Backend removed from routing — no connections attempted. |
+| **Half-Open** | After `recovery_ms`, one probe connection is allowed. Success → Closed, failure → Open. |
+
+### Configuration
+
+```toml
+[ha]
+circuit_breaker_threshold   = 5      # consecutive errors to open (default: 5)
+circuit_breaker_recovery_ms = 10000  # ms in Open before probing (default: 10 000)
+```
+
+### Prometheus metric
+
+```
+turbineproxy_circuit_breaker_state{backend="primary"} 0
+turbineproxy_circuit_breaker_state{backend="replica_0"} 2
+turbineproxy_circuit_breaker_state{backend="replica_1"} 0
+```
+
+Values: `0` = Closed, `1` = Half-Open, `2` = Open.
+
+### Log prefix
+
+All circuit breaker transitions are logged with the `[CB]` prefix:
+
+```
+WARN [CB] Backend replica_0: OPEN after 5 consecutive errors
+INFO [CB] Backend replica_0: HALF-OPEN — probing
+INFO [CB] Backend replica_0: CLOSED — recovered
+```

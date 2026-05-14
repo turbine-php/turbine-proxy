@@ -502,6 +502,10 @@ impl Router {
             } {
                 Ok(r) => r,
                 Err(e) => {
+                    // Record failure in circuit breaker.
+                    if replica_idx < pool.replica_breakers.len() {
+                        pool.replica_breakers[replica_idx].record_failure();
+                    }
                     // Dead replica connection — retry once on a fresh one.
                     if is_connection_lost(&e) {
                         log::warn!(
@@ -514,6 +518,10 @@ impl Router {
                             .execute_query(sql_bytes_to_use)
                             .await
                             .map_err(|e| anyhow::anyhow!("{}", e))?;
+                        // Retry succeeded — record success on the new backend.
+                        if fresh_idx < pool.replica_breakers.len() {
+                            pool.replica_breakers[fresh_idx].record_success();
+                        }
                         if fresh_idx == usize::MAX {
                             pool.put_primary_for_database(fresh, database).await;
                         } else {
@@ -525,6 +533,10 @@ impl Router {
                     return Err(e);
                 }
             };
+            // Success — record in circuit breaker.
+            if replica_idx < pool.replica_breakers.len() {
+                pool.replica_breakers[replica_idx].record_success();
+            }
             if replica_idx == usize::MAX {
                 pool.put_primary_for_database(conn, database).await;
             } else {
@@ -555,6 +567,7 @@ impl Router {
             } {
                 Ok(r) => r,
                 Err(e) => {
+                    pool.primary_breaker.record_failure();
                     if is_connection_lost(&e) {
                         log::warn!(
                             "[pool] primary connection lost, retrying query on fresh connection"
@@ -565,12 +578,14 @@ impl Router {
                             .execute_query(sql_bytes_to_use)
                             .await
                             .map_err(|e| anyhow::anyhow!("{}", e))?;
+                        pool.primary_breaker.record_success();
                         pool.put_primary_for_database(fresh, database).await;
                         return Ok(r);
                     }
                     return Err(e);
                 }
             };
+            pool.primary_breaker.record_success();
             pool.put_primary_for_database(conn, database).await;
             if !response.is_error {
                 let tables = extract_tables_simple(effective_sql);
