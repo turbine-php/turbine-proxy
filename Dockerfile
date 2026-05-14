@@ -50,8 +50,11 @@ RUN RUST_TARGET="$(cat /rust_target)" \
 # ── Full source build ──
 COPY src ./src
 COPY benches ./benches
-RUN CARGO_INCREMENTAL=0 cargo build --release \
-        --target "$(cat /rust_target)"
+# Touch main.rs to force cargo to re-link (the dep-cache step removes the
+# binary and fingerprints, but cargo sometimes still skips recompilation).
+RUN touch src/main.rs \
+    && CARGO_INCREMENTAL=0 cargo build --release \
+           --target "$(cat /rust_target)"
 
 # ── Copy binary to a fixed path so the runtime stage doesn't need TARGETARCH ──
 RUN cp "target/$(cat /rust_target)/release/turbineproxy" /turbineproxy
