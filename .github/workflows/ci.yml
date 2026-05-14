@@ -121,15 +121,19 @@ jobs:
           - db-label: MySQL 8.0
             db-image: mysql:8.0
             db-port: 3306
+            health-cmd: "mysqladmin ping -h 127.0.0.1 -uroot -proot"
           - db-label: MySQL 8.4
             db-image: mysql:8.4
             db-port: 3306
+            health-cmd: "mysqladmin ping -h 127.0.0.1 -uroot -proot"
           - db-label: MariaDB 10.11
             db-image: mariadb:10.11
             db-port: 3306
+            health-cmd: "healthcheck.sh --connect --innodb_initialized"
           - db-label: MariaDB 11.4
             db-image: mariadb:11.4
             db-port: 3306
+            health-cmd: "healthcheck.sh --connect --innodb_initialized"
 
     services:
       mysql:
@@ -143,10 +147,11 @@ jobs:
         ports:
           - ${{ matrix.db-port }}:3306
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-cmd="${{ matrix.health-cmd }}"
           --health-interval=5s
           --health-timeout=5s
-          --health-retries=15
+          --health-retries=20
+          --health-start-period=30s
 
     steps:
       - uses: actions/checkout@v4
