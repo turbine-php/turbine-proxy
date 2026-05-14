@@ -8,6 +8,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Skip the `npm run build` step inside build.rs for all Rust jobs.
+  # The dashboard is built independently in the frontend-tests job.
+  TURBINEPROXY_SKIP_DASHBOARD_BUILD: "1"
 
 jobs:
   # ── Fast checks (no MySQL needed) ──────────────────────────────────────────
