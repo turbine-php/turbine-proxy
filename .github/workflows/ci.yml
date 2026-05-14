@@ -126,9 +126,13 @@ jobs:
           - db-label: MySQL 8.4
             db-image: mysql:8.4
             db-port: 3306
-            # mysql_native_password was removed in 8.4 and must be re-enabled
-            # at server startup — ALTER USER cannot load an unloaded plugin.
-            db-cmd: "--mysql-native-password=ON"
+            # In 8.4 the plugin is disabled by default and
+            # --default-authentication-plugin was removed. We must:
+            #   1. Load the plugin: --mysql-native-password=ON
+            #   2. Set it as the default: --authentication-policy=mysql_native_password
+            # This ensures the docker init script creates root with native
+            # password, so no ALTER USER is needed afterwards.
+            db-cmd: "--mysql-native-password=ON --authentication-policy=mysql_native_password,,"
             health-cmd: "mysqladmin ping -h 127.0.0.1 -uroot -proot"
           - db-label: MariaDB 10.11
             db-image: mariadb:10.11
@@ -173,18 +177,6 @@ jobs:
         with:
           # Separate cache per DB image so linker artefacts don't conflict.
           key: ${{ matrix.db-image }}
-
-      # MySQL 8.4: the plugin is loaded via --mysql-native-password=ON (startup
-      # arg), but the root user is still created with caching_sha2_password by
-      # the docker-entrypoint init script. ALTER USER switches it to native
-      # password so the proxy pool can authenticate.
-      - name: switch mysql 8.4 root to native password auth
-        if: matrix.db-image == 'mysql:8.4'
-        run: |
-          docker exec mysql-service mysql -uroot -proot \
-            -e "ALTER USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY 'root'; \
-                ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root'; \
-                FLUSH PRIVILEGES;"
 
       # Build both the proxy binary and the test binary in one shot.
       - name: cargo build
