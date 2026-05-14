@@ -1,6 +1,6 @@
 [package]
 name = "turbineproxy"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Intelligent MySQL proxy with read/write splitting, query analytics, and automatic index advice"
 license = "Apache-2.0"
@@ -64,6 +64,9 @@ regex = "1"
 # Memory allocator
 mimalloc = "0.1"
 
+# Non-poisoning Mutex/RwLock (eliminates panic cascade from lock poisoning)
+parking_lot = "0.12"
+
 # HTTP client — used for cluster config sync (push to peer nodes)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
@@ -74,6 +77,8 @@ tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
 tempfile = "3"
 criterion = { version = "0.5", features = ["async_tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+libc = "0.2"
+hex = "0.4"
 
 [[bench]]
 name = "proxy_bench"

@@ -11,7 +11,8 @@
 //!   `retention_days`)
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
@@ -115,7 +116,7 @@ impl TimeseriesStore {
     /// Upsert a 1-minute bucket. Safe to call multiple times for the same
     /// minute (counters accumulate via `ON CONFLICT DO UPDATE`).
     pub fn record_minute(&self, bucket_unix: i64, snap: &MinuteSnapshot) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO timeseries
                  (bucket_unix, resolution, queries, slow_queries, total_us, max_us)
@@ -140,7 +141,7 @@ impl TimeseriesStore {
     /// every minute. Includes the current (partial) hour so data appears
     /// immediately without waiting for the hour to complete.
     pub fn rollup_hourly(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute_batch(
             "INSERT OR REPLACE INTO timeseries
                  (bucket_unix, resolution, queries, slow_queries, total_us, max_us)
@@ -161,7 +162,7 @@ impl TimeseriesStore {
     /// Aggregate 1-hour buckets into 1-day rows. Idempotent — includes the
     /// current (partial) day so data is visible without waiting until midnight.
     pub fn rollup_daily(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute_batch(
             "INSERT OR REPLACE INTO timeseries
                  (bucket_unix, resolution, queries, slow_queries, total_us, max_us)
@@ -182,7 +183,7 @@ impl TimeseriesStore {
     /// Delete rows whose bucket is older than `retention_days` days.
     pub fn prune(&self, retention_days: u32) -> Result<()> {
         let cutoff = chrono::Utc::now().timestamp() - (retention_days as i64 * 86_400);
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         conn.execute(
             "DELETE FROM timeseries WHERE bucket_unix < ?1",
             params![cutoff],
@@ -193,7 +194,7 @@ impl TimeseriesStore {
     /// Return the most recent `limit` points at the given resolution
     /// (`'1m'`, `'1h'`, or `'1d'`), in chronological order.
     pub fn query(&self, resolution: &str, limit: usize) -> Result<Vec<TsPoint>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT bucket_unix, queries, slow_queries, total_us, max_us
              FROM timeseries
@@ -230,7 +231,7 @@ impl TimeseriesStore {
         to_unix: i64,
         limit: usize,
     ) -> Result<Vec<TsPoint>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT bucket_unix, queries, slow_queries, total_us, max_us
              FROM timeseries

@@ -27,6 +27,8 @@ pub struct HealthChecker {
     failover_threshold: u32,
     interval: Duration,
     galera_check: bool,
+    cooldown_secs: u64,
+    min_recovery_checks: u32,
 }
 
 impl HealthChecker {
@@ -46,16 +48,20 @@ impl HealthChecker {
             failover_threshold: ha.primary_failover_threshold,
             interval: Duration::from_secs(ha.health_check_interval_secs),
             galera_check: ha.galera_check,
+            cooldown_secs: ha.failover_cooldown_secs,
+            min_recovery_checks: ha.failover_min_recovery_checks,
         }
     }
 
     /// Run forever — meant to be spawned as a `tokio::spawn` task.
     pub async fn run(self) {
         log::info!(
-            "Health checker started — interval={}s, max_replica_lag={}ms, failover_threshold={}",
+            "Health checker started — interval={}s, max_replica_lag={}ms, failover_threshold={}, cooldown={}s, min_recovery_checks={}",
             self.interval.as_secs(),
             self.max_lag_ms,
             self.failover_threshold,
+            self.cooldown_secs,
+            self.min_recovery_checks,
         );
 
         let mut ticker = tokio::time::interval(self.interval);
@@ -92,15 +98,54 @@ impl HealthChecker {
                 .healthy
                 .swap(true, Ordering::Relaxed);
 
-            if was_down || prev_failures >= self.failover_threshold {
-                let had_failover = self.pool.failover_idx.load(Ordering::Relaxed) >= 0;
-                self.pool.failover_idx.store(-1, Ordering::Relaxed);
-                if had_failover {
+            let had_failover = self.pool.failover_idx.load(Ordering::Relaxed) >= 0;
+
+            if had_failover {
+                // Increment recovery check counter.
+                let recovery_count = self.pool.recovery_checks.fetch_add(1, Ordering::Relaxed) + 1;
+
+                // Check min_recovery_checks threshold.
+                if recovery_count < self.min_recovery_checks as usize {
                     log::info!(
-                        "[HA] Primary {} recovered — failover cleared",
-                        self.primary_config.addr
+                        "[HA] Primary {} responding ({}/{} recovery checks) — failover still active",
+                        self.primary_config.addr,
+                        recovery_count,
+                        self.min_recovery_checks,
                     );
+                    return;
                 }
+
+                // Check cooldown period.
+                let triggered_at = self.pool.failover_triggered_at.load(Ordering::Relaxed);
+                if triggered_at > 0 && self.cooldown_secs > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let elapsed = now.saturating_sub(triggered_at);
+                    if elapsed < self.cooldown_secs {
+                        log::warn!(
+                            "[HA] Primary {} recovered but cooldown active ({}/{}s) — failover held",
+                            self.primary_config.addr,
+                            elapsed,
+                            self.cooldown_secs,
+                        );
+                        return;
+                    }
+                }
+
+                // All conditions met — clear failover.
+                self.pool.failover_idx.store(-1, Ordering::Relaxed);
+                self.pool.recovery_checks.store(0, Ordering::Relaxed);
+                self.pool.failover_triggered_at.store(0, Ordering::Relaxed);
+                log::info!(
+                    "[HA] Primary {} recovered — failover cleared",
+                    self.primary_config.addr
+                );
+            } else if was_down || prev_failures >= self.failover_threshold {
+                // Primary was marked down but no failover was active (no replicas available).
+                // Just reset state.
+                self.pool.recovery_checks.store(0, Ordering::Relaxed);
             }
         } else {
             let failures = self
@@ -144,6 +189,32 @@ impl HealthChecker {
     }
 
     fn trigger_failover(&self) {
+        // Detect flapping: if we're triggering again within the cooldown window.
+        let prev_triggered_at = self.pool.failover_triggered_at.load(Ordering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if prev_triggered_at > 0 && self.cooldown_secs > 0 {
+            let elapsed = now.saturating_sub(prev_triggered_at);
+            if elapsed < self.cooldown_secs * 2 {
+                self.pool
+                    .failover_flap_total
+                    .fetch_add(1, Ordering::Relaxed);
+                log::warn!(
+                    "[HA] Failover FLAP detected — re-triggering {}s after last failover (cooldown={}s)",
+                    elapsed,
+                    self.cooldown_secs,
+                );
+            }
+        }
+
+        // Record trigger time and reset recovery counter.
+        self.pool
+            .failover_triggered_at
+            .store(now, Ordering::Relaxed);
+        self.pool.recovery_checks.store(0, Ordering::Relaxed);
+
         // Pick the healthy replica with the lowest lag.
         let best = self
             .replica_configs

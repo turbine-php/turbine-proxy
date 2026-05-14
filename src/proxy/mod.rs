@@ -1,6 +1,7 @@
 pub mod app_analytics;
 pub mod auth_cache;
 pub mod cache;
+pub mod circuit_breaker;
 pub mod classifier;
 pub mod error_events;
 pub mod fingerprint;

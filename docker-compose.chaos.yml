@@ -1,0 +1,175 @@
+# docker-compose.chaos.yml — Chaos testing stack for TurbineProxy
+#
+# Topology:
+#   mysql-primary   :3306  (MySQL 8.0, GTID, binlog)
+#   mysql-replica1  :3337  (MySQL 8.0 read replica)
+#   mysql-replica2  :3338  (MySQL 8.0 read replica, backup)
+#   toxiproxy       :8474  (control API), :13306 (→ primary), :13337 (→ replica1), :13338 (→ replica2)
+#   turbineproxy    :13307 (MySQL proxy → toxiproxy upstream)
+#
+# Usage:
+#   docker compose -f docker-compose.chaos.yml up -d
+#   docker compose -f docker-compose.chaos.yml run --rm chaos-setup   # wire replication
+#   cargo test --test chaos_tests -- --test-threads=1
+#   docker compose -f docker-compose.chaos.yml down -v
+
+services:
+
+  # ── MySQL primary ──────────────────────────────────────────────────────────
+  mysql-primary:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: turbineproxy_test
+    ports:
+      - "13306-direct:3306"  # direct access for setup only
+    expose:
+      - "3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - chaos_primary_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --server-id=1
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+      --max-connections=200
+    networks:
+      - chaos
+
+  # ── MySQL replica 1 ────────────────────────────────────────────────────────
+  mysql-replica1:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: turbineproxy_test
+    expose:
+      - "3306"
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - chaos_replica1_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --server-id=2
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+      --relay-log=relay-bin
+      --log-replica-updates=ON
+      --read-only=ON
+      --skip-replica-start=ON
+    networks:
+      - chaos
+
+  # ── MySQL replica 2 (backup) ───────────────────────────────────────────────
+  mysql-replica2:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: turbineproxy_test
+    expose:
+      - "3306"
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - chaos_replica2_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --server-id=3
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+      --relay-log=relay-bin
+      --log-replica-updates=ON
+      --read-only=ON
+      --skip-replica-start=ON
+    networks:
+      - chaos
+
+  # ── Replication setup (one-shot) ───────────────────────────────────────────
+  chaos-setup:
+    image: mysql:8.0
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica1:
+        condition: service_healthy
+      mysql-replica2:
+        condition: service_healthy
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      PRIMARY_HOST: mysql-primary
+      REPLICA1_HOST: mysql-replica1
+      REPLICA2_HOST: mysql-replica2
+    volumes:
+      - ./tests/fixtures/chaos_replication_setup.sh:/setup.sh:ro
+    entrypoint: ["/bin/bash", "/setup.sh"]
+    restart: "no"
+    networks:
+      - chaos
+
+  # ── Toxiproxy ──────────────────────────────────────────────────────────────
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports:
+      - "8474:8474"   # control API
+      - "13306:13306" # → mysql-primary
+      - "13337:13337" # → mysql-replica1
+      - "13338:13338" # → mysql-replica2
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8474/proxies"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    networks:
+      - chaos
+
+  # ── Toxiproxy proxy configuration (one-shot after toxiproxy is healthy) ────
+  toxiproxy-init:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    depends_on:
+      toxiproxy:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /toxiproxy-cli -host toxiproxy create -l 0.0.0.0:13306 -u mysql-primary:3306 mysql-primary
+        /toxiproxy-cli -host toxiproxy create -l 0.0.0.0:13337 -u mysql-replica1:3306 mysql-replica1
+        /toxiproxy-cli -host toxiproxy create -l 0.0.0.0:13338 -u mysql-replica2:3306 mysql-replica2
+        echo "Toxiproxy proxies created"
+    restart: "no"
+    networks:
+      - chaos
+
+networks:
+  chaos:
+    driver: bridge
+
+volumes:
+  chaos_primary_data:
+  chaos_replica1_data:
+  chaos_replica2_data:

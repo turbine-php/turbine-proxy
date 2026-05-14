@@ -28,7 +28,73 @@ username = "admin"
 password = "strongpassword"
 ```
 
-The dashboard uses token-based authentication (`X-Auth-Token` header). The token is valid for the session duration.
+The dashboard uses token-based authentication (`X-Auth-Token` header).
+
+#### Session Tokens
+
+Tokens are UUIDs hashed with SHA-256 before storage — a process memory dump does not yield usable tokens. Tokens expire after `token_ttl_secs` (default 24 h). A background task sweeps expired tokens every 60 seconds.
+
+```toml
+[dashboard]
+token_ttl_secs = 86400   # 24 h (default); 0 = tokens never expire
+```
+
+#### Token Refresh
+
+Call `POST /api/auth/refresh` to renew a token without re-entering credentials. The old token is atomically revoked before the new one is issued, preventing replay of the old value.
+
+```http
+POST /api/auth/refresh
+X-Auth-Token: <current-token>
+Content-Type: application/json
+
+{ "token": "<current-token>" }
+```
+
+Response:
+
+```json
+{ "ok": true, "token": "<new-token>", "message": null }
+```
+
+Returns `401 Unauthorized` if the token is missing, invalid, or already expired.
+
+#### Logout
+
+Call `POST /api/auth/logout` to explicitly invalidate the session token:
+
+```http
+POST /api/auth/logout
+X-Auth-Token: <token>
+Content-Type: application/json
+
+{ "token": "<token>" }
+```
+
+Both readonly and admin tokens can call this endpoint.
+
+#### Auth Failure Monitoring
+
+Every failed authentication event — wrong password at login, invalid or expired token in the request middleware, and invalid/expired token presented to `/api/auth/refresh` — increments `turbineproxy_dashboard_auth_failures_total`. Monitor this counter in Prometheus / Grafana to detect brute-force attempts.
+
+#### Read-Only Role
+
+Create a second user with dashboard visibility but no write access. Read-only users can view all panels but POST/PUT/DELETE endpoints return `403 Forbidden`.
+
+```toml
+[dashboard]
+readonly_username = "viewer"
+readonly_password = "viewpass"
+```
+
+#### Login Rate Limiting
+
+Failed login attempts are counted per source IP. After `login_max_attempts` failures within 60 seconds the endpoint returns `429 Too Many Requests`. The window resets automatically.
+
+```toml
+[dashboard]
+login_max_attempts = 5   # default
+```
 
 ## Panels
 

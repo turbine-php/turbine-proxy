@@ -20,9 +20,9 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | **Proxy action (HA disabled)** | All writes and reads-on-primary return `ER_LOST_CONNECTION` / connection error |
 | **Client sees** | Connection errors on the first N checks; transparent routing to failover backend afterwards |
 | **Writes during failover** | Routed to the promoted replica — `WARN` log per session: `[HA] write query routed through failover backend` |
-| **Recovery** | When the primary responds to a health check, `failover_idx` is cleared atomically and routing returns to primary. Logged at `INFO` level. |
-| **Observability** | `turbineproxy_ha_failover_active` (gauge), `turbineproxy_ha_failover_events_total` (counter), log prefix `[HA]` at `WARN`/`ERROR` level, `consecutive_failures` per backend in `/api/pool` |
-| **Config levers** | `ha.health_check_interval_secs`, `ha.primary_failover_threshold` |
+| **Recovery** | When the primary responds to health checks, the failover is cleared after passing both the `failover_min_recovery_checks` threshold (default 3 consecutive OK checks) and the `failover_cooldown_secs` timer (default 30s since last failover trigger). This prevents flapping when the primary is unstable. Logged at `INFO` level. |
+| **Observability** | `turbineproxy_ha_failover_active` (gauge), `turbineproxy_ha_failover_events_total` (counter), `turbineproxy_ha_failover_flap_total` (counter — re-triggers within cooldown window), log prefix `[HA]` at `WARN`/`ERROR` level, `consecutive_failures` per backend in `/api/pool` |
+| **Config levers** | `ha.health_check_interval_secs`, `ha.primary_failover_threshold`, `ha.failover_cooldown_secs`, `ha.failover_min_recovery_checks` |
 
 **What does NOT happen:** The proxy does not attempt to restart or reconnect to the database. It does not split writes across backends. It does not promote silently — every failover event is logged at `ERROR` level.
 
@@ -198,6 +198,32 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 
 ---
 
+## 16. Circuit breaker opened (per-backend)
+
+| Attribute | Detail |
+|-----------|--------|
+| **Trigger** | A backend accumulates `circuit_breaker_threshold` (default 5) consecutive query errors |
+| **Proxy action** | Moves the backend's circuit breaker to **Open** state. No connections are attempted until `circuit_breaker_recovery_ms` (default 10 000 ms) elapses. After that, one probe connection is sent (Half-Open); if it succeeds the breaker returns to Closed, if it fails the breaker re-opens. |
+| **Client sees (replica)** | No error if other replicas are healthy — traffic shifts to them. If all replicas are open, reads fall back to primary. |
+| **Client sees (primary)** | Write errors while breaker is open. Recovery is automatic after recovery window. |
+| **Observability** | `turbineproxy_circuit_breaker_state` gauge per-backend (0=closed, 1=half-open, 2=open). Log prefix `[CB]` at `WARN`/`INFO`. |
+| **Config** | `ha.circuit_breaker_threshold`, `ha.circuit_breaker_recovery_ms` |
+
+---
+
+## 17. Backend pool saturated (wait queue)
+
+| Attribute | Detail |
+|-----------|--------|
+| **Trigger** | A backend's per-backend `max_connections` limit is reached |
+| **Proxy action (queue disabled, default)** | Rejects immediately with an error ("connection limit reached; try again later") |
+| **Proxy action (queue enabled)** | Request enters a bounded wait queue (`pool_wait_queue_size`) and blocks up to `pool_wait_timeout_ms`. If a slot frees within the timeout, the request proceeds normally. If the timeout expires, the request is rejected. |
+| **Client sees** | Either transparent delay (if slot frees in time) or connection error |
+| **Observability** | `turbineproxy_pool_wait_queue_length` (gauge), `turbineproxy_pool_wait_timeouts_total` (counter). `WARN` log: `[pool] wait queue timeout for backend ...` |
+| **Config** | `pool_wait_queue_size` (0 = reject-fast), `pool_wait_timeout_ms` (default 5000) |
+
+---
+
 ## Summary: degradation matrix
 
 | What fails | HA enabled | Client sees | Writes continue | Reads continue |
@@ -213,6 +239,8 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | Max connections | — | TCP RST | ❌ | ❌ |
 | Query timeout | — | Error on that query | ✅ others | ✅ others |
 | Transaction timeout | — | Error + disconnect | ❌ session killed | ❌ session killed |
+| Circuit breaker open (replica) | — | Nothing (other replicas/primary) | ✅ primary | ✅ healthy replicas |
+| Circuit breaker open (primary) | Yes | Errors until recovery probe | ❌ until half-open | ✅ replicas |
 
 ---
 
@@ -230,6 +258,7 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | `[pg conn N] backend died mid-tx` | WARN | PG transaction backend death |
 | `[conn N] client error limit reached` | WARN | Client disconnected for errors |
 | `[kill]` | INFO/WARN | Query kill (KILL QUERY sent) |
+| `[CB]` | WARN/INFO | Circuit breaker state transition |
 
 ---
 
@@ -244,3 +273,4 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 | `turbineproxy_replica_lag_seconds > 30` | Sustained | Alert |
 | `[GR] WARN` log events | Rate > 3 per interval | Alert |
 | `turbineproxy_connections_active / max_connections > 0.9` | Sustained | Alert |
+| `turbineproxy_circuit_breaker_state{backend=~".+"} == 2` | Anytime (Open) | Alert |

@@ -25,6 +25,19 @@ pub struct ProxyConfig {
     #[serde(default = "default_pool_size")]
     pub pool_size: usize,
 
+    /// Bounded wait queue size per backend.
+    /// When a backend's `max_connections` is reached, up to this many requests
+    /// will wait for a free slot instead of being rejected immediately.
+    /// 0 = reject-fast (default, legacy behaviour).
+    #[serde(default)]
+    pub pool_wait_queue_size: usize,
+
+    /// Maximum time (milliseconds) a request will wait in the pool queue
+    /// before being rejected. Only applies when `pool_wait_queue_size > 0`.
+    /// Default: 5000 ms.
+    #[serde(default = "default_pool_wait_timeout_ms")]
+    pub pool_wait_timeout_ms: u64,
+
     /// Primary (read-write) MySQL backend
     pub primary: BackendConfig,
 
@@ -266,6 +279,10 @@ struct RawProxyConfig {
     pub listen_addr: Option<String>,
     pub max_connections: Option<usize>,
     pub pool_size: Option<usize>,
+    #[serde(default)]
+    pub pool_wait_queue_size: usize,
+    #[serde(default = "default_pool_wait_timeout_ms")]
+    pub pool_wait_timeout_ms: u64,
     pub primary: Option<BackendConfig>,
     #[serde(default)]
     pub replicas: Vec<BackendConfig>,
@@ -716,6 +733,22 @@ pub struct DashboardConfig {
     /// Dashboard admin password. If empty, auth is disabled.
     #[serde(default)]
     pub password: String,
+
+    /// Optional read-only username. Empty = no read-only user.
+    #[serde(default)]
+    pub readonly_username: String,
+
+    /// Optional read-only password. Empty = no read-only user.
+    #[serde(default)]
+    pub readonly_password: String,
+
+    /// Session token TTL in seconds. 0 = never expires. Default: 86400 (24 h).
+    #[serde(default = "default_token_ttl_secs")]
+    pub token_ttl_secs: u64,
+
+    /// Max login attempts per IP per minute before rate-limiting. Default: 5.
+    #[serde(default = "default_login_max_attempts")]
+    pub login_max_attempts: u32,
 }
 
 impl Default for DashboardConfig {
@@ -725,8 +758,20 @@ impl Default for DashboardConfig {
             listen_addr: default_dashboard_addr(),
             username: String::new(),
             password: String::new(),
+            readonly_username: String::new(),
+            readonly_password: String::new(),
+            token_ttl_secs: default_token_ttl_secs(),
+            login_max_attempts: default_login_max_attempts(),
         }
     }
+}
+
+fn default_token_ttl_secs() -> u64 {
+    86400
+}
+
+fn default_login_max_attempts() -> u32 {
+    5
 }
 
 /// A single query rewriting rule.
@@ -802,6 +847,19 @@ pub struct HaConfig {
     #[serde(default = "default_failover_threshold")]
     pub primary_failover_threshold: u32,
 
+    /// After primary recovery, keep failover active for this many seconds before
+    /// clearing it. Prevents flapping when the primary is unstable.
+    /// 0 = clear immediately on first successful check (legacy behaviour).
+    /// Default: 30.
+    #[serde(default = "default_failover_cooldown_secs")]
+    pub failover_cooldown_secs: u64,
+
+    /// Number of consecutive successful health checks required before clearing
+    /// a failover. Symmetric to `primary_failover_threshold`.
+    /// Default: 3.
+    #[serde(default = "default_failover_min_recovery_checks")]
+    pub failover_min_recovery_checks: u32,
+
     /// Enable Galera / Percona XtraDB Cluster node-state checks.
     ///
     /// When `true`, the health checker queries `SHOW GLOBAL STATUS LIKE 'wsrep_local_state'`
@@ -815,6 +873,18 @@ pub struct HaConfig {
     /// Default: false (disabled).
     #[serde(default)]
     pub galera_check: bool,
+
+    /// Circuit breaker: consecutive errors on a single backend before opening
+    /// the breaker and removing it from routing. 0 = disabled.
+    /// Default: 5.
+    #[serde(default = "default_cb_threshold")]
+    pub circuit_breaker_threshold: u32,
+
+    /// Circuit breaker: time in milliseconds to keep the breaker open before
+    /// transitioning to half-open and allowing a single probe request.
+    /// Default: 10000 (10 seconds).
+    #[serde(default = "default_cb_recovery_ms")]
+    pub circuit_breaker_recovery_ms: u64,
 }
 
 impl Default for HaConfig {
@@ -824,7 +894,11 @@ impl Default for HaConfig {
             health_check_interval_secs: default_health_interval(),
             max_replica_lag_ms: default_max_lag_ms(),
             primary_failover_threshold: default_failover_threshold(),
+            failover_cooldown_secs: default_failover_cooldown_secs(),
+            failover_min_recovery_checks: default_failover_min_recovery_checks(),
             galera_check: false,
+            circuit_breaker_threshold: default_cb_threshold(),
+            circuit_breaker_recovery_ms: default_cb_recovery_ms(),
         }
     }
 }
@@ -878,6 +952,10 @@ fn default_pool_size() -> usize {
     20
 }
 
+fn default_pool_wait_timeout_ms() -> u64 {
+    5000
+}
+
 fn default_true() -> bool {
     true
 }
@@ -902,6 +980,18 @@ fn default_max_lag_ms() -> u64 {
 }
 fn default_failover_threshold() -> u32 {
     3
+}
+fn default_failover_cooldown_secs() -> u64 {
+    30
+}
+fn default_failover_min_recovery_checks() -> u32 {
+    3
+}
+fn default_cb_threshold() -> u32 {
+    5
+}
+fn default_cb_recovery_ms() -> u64 {
+    10000
 }
 fn default_patroni_port() -> u16 {
     8008
@@ -1008,6 +1098,15 @@ pub struct PgsqlConfig {
     #[serde(default = "default_pgsql_pool_size")]
     pub pool_size: usize,
 
+    /// Bounded wait queue size per PostgreSQL backend.
+    /// 0 = reject-fast (default).
+    #[serde(default)]
+    pub pool_wait_queue_size: usize,
+
+    /// Maximum time (ms) a request waits in the pool queue. Default: 5000.
+    #[serde(default = "default_pool_wait_timeout_ms")]
+    pub pool_wait_timeout_ms: u64,
+
     /// Maximum concurrent PostgreSQL client connections (0 = no limit).
     #[serde(default)]
     pub max_connections: usize,
@@ -1038,6 +1137,15 @@ pub struct PgsqlConfig {
     /// Consecutive primary check failures before failover (default: 3).
     #[serde(default = "default_failover_threshold")]
     pub primary_failover_threshold: u32,
+
+    /// After primary recovery, keep failover active for this many seconds.
+    /// 0 = clear immediately (legacy behaviour). Default: 30.
+    #[serde(default = "default_failover_cooldown_secs")]
+    pub failover_cooldown_secs: u64,
+
+    /// Consecutive successful checks required before clearing failover. Default: 3.
+    #[serde(default = "default_failover_min_recovery_checks")]
+    pub failover_min_recovery_checks: u32,
 
     /// Database used exclusively for backend health probes (`SELECT 1`,
     /// `pg_is_in_recovery()`). This lets client sessions use any database while
@@ -1179,6 +1287,8 @@ impl ProxyConfig {
             listen_addr,
             max_connections,
             pool_size,
+            pool_wait_queue_size: raw.pool_wait_queue_size,
+            pool_wait_timeout_ms: raw.pool_wait_timeout_ms,
             primary,
             replicas,
             analytics: raw.analytics,

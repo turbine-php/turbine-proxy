@@ -7,6 +7,109 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.0] - 2026-05-14
+
+### Security & Hardening
+
+- **No lock poisoning** — All internal mutexes and RW-locks migrated from
+  `std::sync::{Mutex,RwLock}` to `parking_lot::{Mutex,RwLock}`. Lock poisoning is
+  impossible: if a thread panics while holding a lock, the lock is released cleanly
+  and subsequent acquires succeed without any `PoisonError` handling. Covered by
+  dedicated panic-recovery unit tests.
+
+- **SCRAM-SHA-256 hardening** — PostgreSQL SCRAM-SHA-256 authentication passes a
+  full fuzz corpus (15 invariant assertions, randomised per-run) covering malformed
+  first/final server messages, short/empty nonce, missing fields, and replay
+  variants. No panics or incorrect accept/reject decisions observed.
+
+- **Dashboard auth failure counter** — A new atomic counter
+  (`turbineproxy_dashboard_auth_failures_total`) is incremented on every failed
+  authentication event: wrong password at login, invalid/expired token in the
+  `auth_middleware`, and invalid/expired token presented to `/api/auth/refresh`.
+  Exposed via Prometheus.
+
+### Dashboard Auth
+
+- **`POST /api/auth/refresh`** — Endpoint for renewing an authentication token
+  without re-entering credentials. The old token is atomically revoked and a new
+  UUID token is issued with a fresh TTL. Readonly and admin tokens are both
+  supported. Invalid or expired tokens increment the auth failure counter and
+  return `401 Unauthorized`.
+
+- **`POST /api/auth/logout`** — Explicitly revoke the current session token.
+  The token is removed from the in-memory store immediately. Readonly tokens can
+  call this endpoint (previously blocked by the `is_mutating` guard — now
+  explicitly exempted alongside `/api/auth/refresh`).
+
+### Reliability
+
+- **Failover flap protection** — Failover events are guarded by a configurable
+  cooldown (`failover_cooldown_secs`) and a minimum number of consecutive health
+  check passes before a recovered backend is re-admitted
+  (`failover_min_recovery_checks`). Prevents oscillation in unstable network
+  conditions.
+
+- **Per-backend circuit breaker** — Each backend gets an independent circuit breaker
+  (Closed → Open → Half-Open state machine). Once a backend accumulates
+  `circuit_breaker_threshold` consecutive failures the circuit opens and requests
+  are rejected immediately without hitting the network. After
+  `circuit_breaker_timeout_secs` the circuit enters Half-Open and probes with one
+  request before fully closing.
+
+- **Bounded connection wait queue** — Connection acquisition from the pool is now
+  queued rather than immediately failing. `pool_wait_timeout_ms` caps how long a
+  query waits for a connection before returning an error to the client. Prevents
+  thundering-herd during traffic spikes.
+
+### Performance
+
+- **Connection multiplexing (Phase A)** — Multiple client sessions can share a
+  single backend connection during idle phases. A multiplexing ratio gauge
+  (`turbineproxy_multiplex_ratio`) is exported via Prometheus. Values > 1 indicate
+  effective connection reuse.
+
+- **PostgreSQL HA parity** — All HA features available for MySQL (health checks,
+  replica lag monitoring, weighted read routing, automatic failover, flap
+  protection, circuit breakers, bounded wait queue, multiplexing) now apply equally
+  to the PostgreSQL listener.
+
+### Observability
+
+- **`turbineproxy_dashboard_auth_failures_total`** — New Prometheus counter for
+  monitoring brute-force activity and token lifecycle issues.
+
+- **`turbineproxy_multiplex_ratio`** — New Prometheus gauge for connection
+  multiplexing efficiency.
+
+- **`turbineproxy_pg_replica_lag_seconds`** — Prometheus gauge per PostgreSQL
+  replica, sourced from `pg_last_xact_replay_timestamp`.
+
+- **`turbineproxy_sessions_pinned_total`** — Counter of sessions pinned to a
+  specific backend (user variables, prepared statements, open transactions).
+
+### CI / Quality
+
+- **`clippy::unwrap_used` lint on critical paths** — A dedicated CI step runs
+  `clippy` with `-D clippy::unwrap_used` scoped to `src/dashboard/` and
+  `src/analytics/`. Any unguarded `.unwrap()` in those paths fails the build.
+
+- **Panic recovery tests** — Two `#[test]` functions in `src/proxy/server.rs`
+  assert that `parking_lot::Mutex` and `parking_lot::RwLock` remain usable after
+  a thread panics while holding the lock. Run with
+  `cargo test --bin turbineproxy parking_lot`.
+
+- **PostgreSQL TLS integration test** — `tests/pg_integration_tests.rs` now
+  includes a `pg_tls_connection_with_psql` test that connects with
+  `sslmode=require` using the `psql` CLI and asserts `ssl=t` in `pg_stat_ssl`.
+  Auto-skips when `psql` is not in `PATH` or when `TEST_PG_SKIP_TLS` is set.
+
+### Dashboard Configuration (breaking)
+
+- **`token_ttl_secs = 0`** no longer means "default 24 h" — it means "tokens
+  never expire". Set an explicit positive value to enforce expiry.
+
+---
+
 ## [0.3.1] - 2026-05-09
 
 ### Fixed

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use super::{token_hash, AppState};
+use super::{token_hash, AppState, TokenEntry, TokenRole};
 
 #[derive(Deserialize)]
 pub struct ProtocolQuery {
@@ -34,7 +34,7 @@ fn resolve_protocol(state: &AppState, raw: Option<&str>) -> Option<&'static str>
         Some("mysql") => Some("mysql"),
         Some("pgsql") => Some("pgsql"),
         Some("auto") => {
-            let cfg = state.proxy_config.read().unwrap();
+            let cfg = state.proxy_config.read();
             let mysql_enabled = cfg.mysql_enabled;
             drop(cfg);
             if mysql_enabled {
@@ -73,13 +73,51 @@ pub struct LoginResponse {
 }
 
 pub async fn login(
+    ConnectInfo(client_addr): ConnectInfo<std::net::SocketAddr>,
     State(state): State<AppState>,
     Json(body): Json<LoginRequest>,
 ) -> (StatusCode, Json<LoginResponse>) {
-    // If no credentials configured, auth is open — return a dummy token
+    let client_ip = client_addr.ip().to_string();
+
+    // ── Rate limiting ────────────────────────────────────────────────────────────
+    if state.login_max_attempts > 0 {
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(60);
+        let mut rl = state.rate_limits.lock();
+        let entry = rl.entry(client_ip.clone()).or_insert((0, now));
+        // Reset counter if window has elapsed
+        if now.duration_since(entry.1) > window {
+            *entry = (0, now);
+        }
+        if entry.0 >= state.login_max_attempts {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(LoginResponse {
+                    ok: false,
+                    token: None,
+                    message: Some("Too many login attempts. Try again in 1 minute.".into()),
+                }),
+            );
+        }
+    }
+
+    // Helper: build a token entry with the configured TTL
+    let make_entry = |role: TokenRole| TokenEntry {
+        expires_at: if state.token_ttl_secs > 0 {
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(state.token_ttl_secs))
+        } else {
+            None
+        },
+        role,
+    };
+
+    // ── Open mode (auth disabled) ──────────────────────────────────────────────
     if state.dashboard_username.is_empty() || state.dashboard_password.is_empty() {
         let token = Uuid::new_v4().to_string();
-        state.tokens.lock().unwrap().insert(token_hash(&token));
+        state
+            .tokens
+            .lock()
+            .insert(token_hash(&token), make_entry(TokenRole::Admin));
         return (
             StatusCode::OK,
             Json(LoginResponse {
@@ -90,29 +128,53 @@ pub async fn login(
         );
     }
 
-    if ct_eq_str(&body.username, &state.dashboard_username)
-        && ct_eq_str(&body.password, &state.dashboard_password)
-    {
-        let token = Uuid::new_v4().to_string();
-        state.tokens.lock().unwrap().insert(token_hash(&token));
-        (
-            StatusCode::OK,
-            Json(LoginResponse {
-                ok: true,
-                token: Some(token),
-                message: None,
-            }),
-        )
+    // ── Credential check ─────────────────────────────────────────────────────
+    let is_admin = ct_eq_str(&body.username, &state.dashboard_username)
+        && ct_eq_str(&body.password, &state.dashboard_password);
+
+    let is_readonly = !state.dashboard_readonly_username.is_empty()
+        && ct_eq_str(&body.username, &state.dashboard_readonly_username)
+        && ct_eq_str(&body.password, &state.dashboard_readonly_password);
+
+    let role = if is_admin {
+        TokenRole::Admin
+    } else if is_readonly {
+        TokenRole::ReadOnly
     } else {
-        (
+        // Increment failed attempt counter for this IP
+        if state.login_max_attempts > 0 {
+            let now = std::time::Instant::now();
+            let mut rl = state.rate_limits.lock();
+            let entry = rl.entry(client_ip).or_insert((0, now));
+            entry.0 += 1;
+        }
+        state
+            .metrics
+            .dashboard_auth_failures
+            .fetch_add(1, Ordering::Relaxed);
+        return (
             StatusCode::UNAUTHORIZED,
             Json(LoginResponse {
                 ok: false,
                 token: None,
                 message: Some("Invalid credentials".into()),
             }),
-        )
-    }
+        );
+    };
+
+    let token = Uuid::new_v4().to_string();
+    state
+        .tokens
+        .lock()
+        .insert(token_hash(&token), make_entry(role));
+    (
+        StatusCode::OK,
+        Json(LoginResponse {
+            ok: true,
+            token: Some(token),
+            message: None,
+        }),
+    )
 }
 
 // ── /api/logout ──────────────────────────────────────────────────────────────
@@ -126,12 +188,85 @@ pub async fn logout(
     State(state): State<AppState>,
     Json(body): Json<LogoutRequest>,
 ) -> Json<serde_json::Value> {
-    state
-        .tokens
-        .lock()
-        .unwrap()
-        .remove(&token_hash(&body.token));
+    state.tokens.lock().remove(&token_hash(&body.token));
     Json(serde_json::json!({ "ok": true }))
+}
+
+// ── /api/auth/refresh ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RefreshRequest {
+    pub token: String,
+}
+
+#[derive(Serialize)]
+pub struct RefreshResponse {
+    pub ok: bool,
+    pub token: Option<String>,
+    pub message: Option<String>,
+}
+
+/// Validate an existing token and issue a fresh one with a renewed TTL.
+/// The old token is atomically revoked before the new one is issued.
+pub async fn refresh_token(
+    State(state): State<AppState>,
+    Json(body): Json<RefreshRequest>,
+) -> (StatusCode, Json<RefreshResponse>) {
+    let old_hash = token_hash(&body.token);
+    let mut tokens = state.tokens.lock();
+    let Some(entry) = tokens.get(&old_hash) else {
+        state
+            .metrics
+            .dashboard_auth_failures
+            .fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(RefreshResponse {
+                ok: false,
+                token: None,
+                message: Some("Token not found or already expired".into()),
+            }),
+        );
+    };
+    // Reject if expired
+    if let Some(exp) = entry.expires_at {
+        if std::time::Instant::now() > exp {
+            tokens.remove(&old_hash);
+            state
+                .metrics
+                .dashboard_auth_failures
+                .fetch_add(1, Ordering::Relaxed);
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(RefreshResponse {
+                    ok: false,
+                    token: None,
+                    message: Some("Token expired".into()),
+                }),
+            );
+        }
+    }
+    let role = entry.role;
+    tokens.remove(&old_hash);
+    let new_token = Uuid::new_v4().to_string();
+    let new_entry = super::TokenEntry {
+        expires_at: if state.token_ttl_secs > 0 {
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(state.token_ttl_secs))
+        } else {
+            None
+        },
+        role,
+    };
+    tokens.insert(token_hash(&new_token), new_entry);
+    drop(tokens);
+    (
+        StatusCode::OK,
+        Json(RefreshResponse {
+            ok: true,
+            token: Some(new_token),
+            message: None,
+        }),
+    )
 }
 
 // ── /health ──────────────────────────────────────────────────────────────────
@@ -192,7 +327,7 @@ pub async fn stats(
     };
 
     let enabled = if protocol == "mysql" {
-        let cfg = state.proxy_config.read().unwrap();
+        let cfg = state.proxy_config.read();
         !cfg.listen_addr.trim().is_empty()
     } else {
         state.pg_proxy_router.is_some()
@@ -229,8 +364,10 @@ pub async fn stats(
 /// - PostgreSQL proxy is enabled only when `pgsql.enabled=true` and startup succeeded.
 /// - Runtime backend CRUD currently exists only for MySQL.
 pub async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let cfg = state.proxy_config.read().unwrap().clone();
+    let cfg = state.proxy_config.read();
     let mysql_enabled = cfg.mysql_enabled;
+    let gr_enabled = cfg.group_replication.enabled;
+    drop(cfg);
     let pg_enabled = state.pg_pool.is_some();
     let dashboard_auth_enabled =
         !state.dashboard_username.is_empty() && !state.dashboard_password.is_empty();
@@ -241,7 +378,7 @@ pub async fn capabilities(State(state): State<AppState>) -> Json<serde_json::Val
         "dashboard_auth_enabled": dashboard_auth_enabled,
         "mysql_runtime_backends_supported": true,
         "pgsql_runtime_backends_supported": true,
-        "group_replication_enabled": cfg.group_replication.enabled,
+        "group_replication_enabled": gr_enabled,
     }))
 }
 
@@ -380,9 +517,9 @@ async fn collect_query_rows(state: &AppState, by_p95: bool) -> Vec<QueryRow> {
         .collect();
 
     if by_p95 {
-        rows.sort_by(|a, b| b.p95_us.unwrap_or(0).cmp(&a.p95_us.unwrap_or(0)));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.p95_us.unwrap_or(0)));
     } else {
-        rows.sort_by(|a, b| b.count.cmp(&a.count));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.count));
     }
     rows.truncate(50);
     rows
@@ -399,7 +536,7 @@ pub async fn queries(
         }));
     };
     let enabled = if protocol == "mysql" {
-        let cfg = state.proxy_config.read().unwrap();
+        let cfg = state.proxy_config.read();
         !cfg.listen_addr.trim().is_empty()
     } else {
         state.pg_proxy_router.is_some()
@@ -436,7 +573,7 @@ pub async fn slow_queries(
         }));
     };
     let enabled = if protocol == "mysql" {
-        let cfg = state.proxy_config.read().unwrap();
+        let cfg = state.proxy_config.read();
         !cfg.listen_addr.trim().is_empty()
     } else {
         state.pg_proxy_router.is_some()
@@ -492,7 +629,7 @@ pub async fn pool_stats(
     }
 
     let copy_active = state.pg_copy_active.load(Ordering::Relaxed);
-    match state.pg_proxy_router.clone() {
+    match state.pg_proxy_router.as_ref() {
         Some(router) => {
             let pool = router.pool().await;
             let (stats, backends) = tokio::join!(pool.pool_stats(), pool.backend_stats());
@@ -635,7 +772,7 @@ pub async fn reload_backends(State(state): State<AppState>) -> Json<ReloadRespon
             let replica_count = new_cfg.replicas.len();
 
             // Swap the proxy_config so SIGHUP and future reloads see the latest.
-            *state.proxy_config.write().unwrap() = new_cfg.clone();
+            *state.proxy_config.write() = new_cfg.clone();
 
             // Hot-swap the backend pool inside the router.
             let idle_timeout = if new_cfg.connection_max_idle_secs == 0 {
@@ -645,13 +782,17 @@ pub async fn reload_backends(State(state): State<AppState>) -> Json<ReloadRespon
                     new_cfg.connection_max_idle_secs,
                 ))
             };
-            let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
+            let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_options(
                 &new_cfg.primary,
                 &new_cfg.replicas,
                 new_cfg.pool_size,
                 // Re-use the protocol from the existing pool (it's Arc-cloned).
                 state.pool.primary.protocol.clone(),
                 idle_timeout,
+                new_cfg.ha.circuit_breaker_threshold,
+                new_cfg.ha.circuit_breaker_recovery_ms,
+                new_cfg.pool_wait_queue_size,
+                new_cfg.pool_wait_timeout_ms,
             ));
             state.proxy_router.reload_pool(new_pool).await;
 
@@ -746,7 +887,7 @@ pub async fn cluster_sync(
     let primary_addr = new_cfg.primary.addr.clone();
     let replica_count = new_cfg.replicas.len();
 
-    *state.proxy_config.write().unwrap() = new_cfg.clone();
+    *state.proxy_config.write() = new_cfg.clone();
 
     let idle_timeout = if new_cfg.connection_max_idle_secs == 0 {
         None
@@ -755,12 +896,16 @@ pub async fn cluster_sync(
             new_cfg.connection_max_idle_secs,
         ))
     };
-    let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
+    let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_options(
         &new_cfg.primary,
         &new_cfg.replicas,
         new_cfg.pool_size,
         state.pool.primary.protocol.clone(),
         idle_timeout,
+        new_cfg.ha.circuit_breaker_threshold,
+        new_cfg.ha.circuit_breaker_recovery_ms,
+        new_cfg.pool_wait_queue_size,
+        new_cfg.pool_wait_timeout_ms,
     ));
     state.proxy_router.reload_pool(new_pool).await;
 
@@ -854,7 +999,7 @@ pub async fn backend_stats(
         return Json(state.pool.backend_stats().await);
     }
 
-    match state.pg_proxy_router.clone() {
+    match state.pg_proxy_router.as_ref() {
         Some(router) => {
             let pool = router.pool().await;
             Json(pool.backend_stats().await)
@@ -901,10 +1046,14 @@ pub async fn cluster_state(
     Query(params): Query<ProtocolQuery>,
 ) -> Json<ClusterStateResponse> {
     let requested = normalized_protocol(params.protocol.as_deref()).unwrap_or("auto");
-    let cfg = state.proxy_config.read().unwrap().clone();
-
-    let mysql_enabled = !cfg.listen_addr.trim().is_empty();
-    let pg_enabled = state.pg_proxy_router.is_some();
+    let (mysql_enabled, pg_enabled, patroni_check) = {
+        let cfg = state.proxy_config.read();
+        (
+            !cfg.listen_addr.trim().is_empty(),
+            state.pg_proxy_router.is_some(),
+            cfg.pgsql.patroni_check,
+        )
+    };
 
     let mysql_view = async {
         let members = state.pool.gr_members.lock().await.clone();
@@ -948,7 +1097,7 @@ pub async fn cluster_state(
     };
 
     let pg_view = async {
-        if let Some(router) = state.pg_proxy_router.clone() {
+        if let Some(router) = state.pg_proxy_router.as_ref() {
             let pool = router.pool().await;
             let backends = pool.backend_stats().await;
             let failover_active = pool.failover_idx.load(Ordering::Relaxed) >= 0;
@@ -986,7 +1135,7 @@ pub async fn cluster_state(
                 enabled: pg_enabled,
                 primary_addr,
                 failover_active,
-                patroni_check: Some(cfg.pgsql.patroni_check),
+                patroni_check: Some(patroni_check),
                 members,
             }
         } else {
@@ -996,7 +1145,7 @@ pub async fn cluster_state(
                 enabled: false,
                 primary_addr: None,
                 failover_active: false,
-                patroni_check: Some(cfg.pgsql.patroni_check),
+                patroni_check: Some(patroni_check),
                 members: Vec::new(),
             }
         }
@@ -1155,7 +1304,7 @@ pub async fn cluster_action(
             }
         }
     } else {
-        let Some(router) = state.pg_proxy_router.clone() else {
+        let Some(router) = state.pg_proxy_router.as_ref() else {
             return Json(serde_json::json!({ "ok": false, "error": "pgsql proxy is disabled" }));
         };
         let pool = router.pool().await;
@@ -1200,7 +1349,9 @@ pub async fn rewrite_rules(
 // ── /metrics (Prometheus text exposition) ────────────────────────────────────
 
 pub async fn metrics(State(state): State<AppState>) -> impl axum::response::IntoResponse {
-    let body = crate::dashboard::prometheus::render(&state.metrics, &state.pool).await;
+    let body =
+        crate::dashboard::prometheus::render(&state.metrics, &state.pool, state.pg_pool.as_deref())
+            .await;
     (
         [(
             axum::http::header::CONTENT_TYPE,
@@ -1345,7 +1496,7 @@ pub async fn flush_stats(State(state): State<AppState>) -> Json<serde_json::Valu
 /// Return information about the configured frontend TLS certificate.
 /// Returns `{ "enabled": false }` when TLS is not configured.
 pub async fn tls_cert_info(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let config = state.proxy_config.read().unwrap();
+    let config = state.proxy_config.read();
     let tls = &config.frontend_tls;
     if !tls.enabled || tls.cert.is_empty() {
         return Json(serde_json::json!({ "enabled": false }));

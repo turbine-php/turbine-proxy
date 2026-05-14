@@ -15,7 +15,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
 
 use serde::Serialize;
 
@@ -94,7 +95,7 @@ impl RegressionStore {
     /// Deduplicates: updates an existing active alert rather than adding a duplicate.
     pub fn report_hot_key(&self, fingerprint: &str, example_sql: &str, hit_count: u64) {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let mut alerts = self.alerts.lock().unwrap();
+        let mut alerts = self.alerts.lock();
         for a in alerts.iter_mut() {
             if a.fingerprint == fingerprint
                 && matches!(&a.details, AlertKind::HotKey { .. })
@@ -124,8 +125,8 @@ impl RegressionStore {
     /// the alert list. Also runs static full-scan heuristics on each fingerprint.
     pub fn check(&self, current: &[crate::analytics::collector::QueryStats]) {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let mut baseline = self.baseline.lock().unwrap();
-        let mut alerts = self.alerts.lock().unwrap();
+        let mut baseline = self.baseline.lock();
+        let mut alerts = self.alerts.lock();
 
         // Collect active fingerprints for auto-resolve pass.
         let active_fps: std::collections::HashSet<&str> =
@@ -247,7 +248,7 @@ impl RegressionStore {
 
     /// Return up to 100 alerts: active first (sorted by detected_at desc), then resolved.
     pub fn snapshot(&self) -> Vec<RegressionAlert> {
-        let alerts = self.alerts.lock().unwrap();
+        let alerts = self.alerts.lock();
         let mut result: Vec<RegressionAlert> = alerts.clone();
         result.sort_by(|a, b| {
             // Active before resolved; within each group, newest first.

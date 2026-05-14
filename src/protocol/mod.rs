@@ -130,6 +130,10 @@ pub trait BackendConnection: Send + Sync {
     /// Used for prepared statements, COM_INIT_DB, and other pass-through commands.
     async fn send_raw(&mut self, packet: &[u8]) -> Result<BackendResponse>;
 
+    /// Send a raw command packet that produces NO server response.
+    /// Used for fire-and-forget MySQL commands: COM_STMT_CLOSE, COM_STMT_SEND_LONG_DATA.
+    async fn send_raw_no_response(&mut self, packet: &[u8]) -> Result<()>;
+
     #[allow(dead_code)]
     async fn ping(&mut self) -> Result<()>;
     fn is_healthy(&self) -> bool;

@@ -159,11 +159,13 @@ pool_size                  = 20
 max_connections            = 0
 connection_max_idle_secs   = 55
 read_your_own_writes_ms    = 0
-health_check_interval_secs = 10
-max_replica_lag_ms         = 5000
-primary_failover_threshold = 3
-ssl_cert                   = ""
-ssl_key                    = ""
+health_check_interval_secs   = 10
+max_replica_lag_ms           = 5000
+primary_failover_threshold   = 3
+failover_cooldown_secs       = 30
+failover_min_recovery_checks = 3
+ssl_cert                     = ""
+ssl_key                      = ""
 ```
 
 | Key | Type | Default | Description |
@@ -178,6 +180,8 @@ ssl_key                    = ""
 | `health_check_interval_secs` | int | `10` | How often to probe backends (seconds) |
 | `max_replica_lag_ms` | int | `5000` | Replicas lagging more than this are marked unhealthy |
 | `primary_failover_threshold` | int | `3` | Consecutive failed health checks before promoting a replica |
+| `failover_cooldown_secs` | int | `30` | Seconds to hold failover after primary recovery (flap protection) |
+| `failover_min_recovery_checks` | int | `3` | Consecutive OK checks before clearing failover |
 | `ssl_cert` | string | `""` | Path to PEM certificate for client→proxy TLS |
 | `ssl_key` | string | `""` | Path to PEM private key for client→proxy TLS |
 | `server_version` | string | `"16.0"` | PostgreSQL version string sent to clients at startup. Override when migrating to/from Aurora, Cloud SQL, etc. (e.g. `"15.4-aurora"`) |
@@ -366,18 +370,26 @@ retention_days = 30
 
 ```toml
 [dashboard]
-enabled     = true
-listen_addr = "0.0.0.0:8080"
-username    = ""
-password    = ""
+enabled            = true
+listen_addr        = "0.0.0.0:8080"
+username           = ""
+password           = ""
+readonly_username  = ""
+readonly_password  = ""
+token_ttl_secs     = 86400
+login_max_attempts = 5
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | bool | `true` | Enable the web dashboard and REST API |
 | `listen_addr` | string | `"0.0.0.0:8080"` | TCP address for the dashboard HTTP server |
-| `username` | string | `""` | Dashboard login username. Empty = no authentication |
-| `password` | string | `""` | Dashboard login password. Empty = no authentication |
+| `username` | string | `""` | Dashboard admin login username. Empty = no authentication |
+| `password` | string | `""` | Dashboard admin login password. Empty = no authentication |
+| `readonly_username` | string | `""` | Optional read-only user. Empty = disabled. Gets dashboard visibility without write access |
+| `readonly_password` | string | `""` | Password for the read-only user |
+| `token_ttl_secs` | int | `86400` | Session token lifetime in seconds. `0` = never expires. Default is 24 hours |
+| `login_max_attempts` | int | `5` | Maximum failed login attempts per source IP per minute before returning HTTP 429. `0` = disabled |
 
 ---
 
@@ -385,11 +397,13 @@ password    = ""
 
 ```toml
 [ha]
-enabled                   = true
-health_check_interval_secs = 5
-max_replica_lag_ms         = 5000
-primary_failover_threshold = 3
-galera_check               = false
+enabled                      = true
+health_check_interval_secs   = 5
+max_replica_lag_ms           = 5000
+primary_failover_threshold   = 3
+failover_cooldown_secs       = 30
+failover_min_recovery_checks = 3
+galera_check                 = false
 ```
 
 | Key | Type | Default | Description |
@@ -398,6 +412,8 @@ galera_check               = false
 | `health_check_interval_secs` | int | `5` | How often to check backend health (seconds) |
 | `max_replica_lag_ms` | int | `5000` | Replicas lagging more than this are marked unhealthy and excluded from routing |
 | `primary_failover_threshold` | int | `3` | Consecutive failed health checks before promoting a replica to primary |
+| `failover_cooldown_secs` | int | `30` | After primary recovery, keep failover active for this many seconds before clearing. Prevents flapping. `0` = clear immediately (legacy behaviour) |
+| `failover_min_recovery_checks` | int | `3` | Consecutive successful health checks required before clearing a failover. Symmetric to `primary_failover_threshold` |
 | `galera_check` | bool | `false` | Enable Galera/Percona XtraDB Cluster `wsrep_local_state` health checks |
 
 ---

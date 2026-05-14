@@ -86,6 +86,23 @@ fn is_connection_lost(e: &anyhow::Error) -> bool {
         || msg.contains("2013")
 }
 
+/// Replay session-init SQLs on a fresh backend connection.
+///
+/// Called in the non-transaction multiplexing path (Fase A): each query may
+/// land on a different pooled backend connection, so SET NAMES, SET SESSION
+/// var=literal, and similar replayable statements must be re-applied before
+/// executing the actual query.  Errors are logged but do not fail the query.
+async fn replay_session_vars(
+    conn: &mut Box<dyn crate::protocol::BackendConnection>,
+    init_sqls: &[String],
+) {
+    for sql in init_sqls {
+        if let Err(e) = conn.execute_query(sql.as_bytes()).await {
+            log::warn!("[multiplex] replay '{}' failed: {}", sql, e);
+        }
+    }
+}
+
 /// Routes queries to the appropriate backend (primary or replica).
 /// One `Router` per `ProxyServer` — cloned cheaply via the inner `Arc`s.
 ///
@@ -492,6 +509,10 @@ impl Router {
 
         if effective_replica {
             let (mut conn, replica_idx) = pool.get_replica_for_database(database).await?;
+            // Fase A multiplexing: replay session init SQLs on every fresh
+            // connection. Each query may land on a different backend connection;
+            // SET NAMES, SET SESSION var=... must be re-applied for correctness.
+            replay_session_vars(&mut conn, session_init_sqls).await;
             let response = match if timeout_ms > 0 {
                 self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms)
                     .await
@@ -502,6 +523,10 @@ impl Router {
             } {
                 Ok(r) => r,
                 Err(e) => {
+                    // Record failure in circuit breaker.
+                    if replica_idx < pool.replica_breakers.len() {
+                        pool.replica_breakers[replica_idx].record_failure();
+                    }
                     // Dead replica connection — retry once on a fresh one.
                     if is_connection_lost(&e) {
                         log::warn!(
@@ -510,10 +535,15 @@ impl Router {
                         drop(conn); // discard dead connection (not returned to pool)
                         let (mut fresh, fresh_idx) =
                             pool.get_replica_for_database(database).await?;
+                        replay_session_vars(&mut fresh, session_init_sqls).await;
                         let r = fresh
                             .execute_query(sql_bytes_to_use)
                             .await
                             .map_err(|e| anyhow::anyhow!("{}", e))?;
+                        // Retry succeeded — record success on the new backend.
+                        if fresh_idx < pool.replica_breakers.len() {
+                            pool.replica_breakers[fresh_idx].record_success();
+                        }
                         if fresh_idx == usize::MAX {
                             pool.put_primary_for_database(fresh, database).await;
                         } else {
@@ -525,6 +555,10 @@ impl Router {
                     return Err(e);
                 }
             };
+            // Success — record in circuit breaker.
+            if replica_idx < pool.replica_breakers.len() {
+                pool.replica_breakers[replica_idx].record_success();
+            }
             if replica_idx == usize::MAX {
                 pool.put_primary_for_database(conn, database).await;
             } else {
@@ -545,6 +579,9 @@ impl Router {
         } else {
             // Write path — execute on primary, then invalidate affected tables.
             let mut conn = pool.get_primary_for_database(database).await?;
+            // Fase A multiplexing: replay session init SQLs on the fresh primary
+            // connection so SET NAMES / SET SESSION vars take effect.
+            replay_session_vars(&mut conn, session_init_sqls).await;
             let response = match if timeout_ms > 0 {
                 self.execute_timed(&mut conn, sql_bytes_to_use, timeout_ms)
                     .await
@@ -555,22 +592,26 @@ impl Router {
             } {
                 Ok(r) => r,
                 Err(e) => {
+                    pool.primary_breaker.record_failure();
                     if is_connection_lost(&e) {
                         log::warn!(
                             "[pool] primary connection lost, retrying query on fresh connection"
                         );
                         drop(conn);
                         let mut fresh = pool.get_primary_for_database(database).await?;
+                        replay_session_vars(&mut fresh, session_init_sqls).await;
                         let r = fresh
                             .execute_query(sql_bytes_to_use)
                             .await
                             .map_err(|e| anyhow::anyhow!("{}", e))?;
+                        pool.primary_breaker.record_success();
                         pool.put_primary_for_database(fresh, database).await;
                         return Ok(r);
                     }
                     return Err(e);
                 }
             };
+            pool.primary_breaker.record_success();
             pool.put_primary_for_database(conn, database).await;
             if !response.is_error {
                 let tables = extract_tables_simple(effective_sql);
@@ -1146,6 +1187,30 @@ impl Router {
                 // stmts prepared before shadow was enabled).
                 let backend_id = shadow.backend_id(proxy_id).unwrap_or(proxy_id);
                 let rewritten = mysql_rewrite_stmt_id(raw, backend_id);
+
+                // COM_STMT_CLOSE and COM_STMT_SEND_LONG_DATA are fire-and-forget:
+                // MySQL sends NO response for these commands.  Calling send_raw
+                // (which reads a response) would deadlock.
+                if cmd_byte == cmd::COM_STMT_CLOSE || cmd_byte == cmd::COM_STMT_SEND_LONG_DATA {
+                    active_conn!()
+                        .send_raw_no_response(&rewritten)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    if cmd_byte == cmd::COM_STMT_CLOSE {
+                        shadow.remove(proxy_id);
+                    }
+                    // Return a synthetic empty OK so the caller has something
+                    // to write back.  The mysql client library does not actually
+                    // read a response for CLOSE/SEND_LONG_DATA, but if the
+                    // caller writes this to the client it will be harmless.
+                    return Ok(BackendResponse {
+                        bytes: vec![],
+                        affected_rows: None,
+                        is_error: false,
+                        session_changes: vec![],
+                        write_gtid: None,
+                    });
+                }
 
                 let result = active_conn!()
                     .send_raw(&rewritten)

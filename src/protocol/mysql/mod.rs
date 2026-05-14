@@ -436,8 +436,17 @@ impl BackendConnection for MySQLBackendConnection {
         self.codec.flush_maybe_compressed(&mut self.writer).await?;
         self.writer.flush().await?;
 
-        let (bytes, session_changes, write_gtid) =
-            collect_response_tracked(&mut self.reader).await?;
+        // COM_STMT_PREPARE has a unique response format (PREPARE_OK + param defs
+        // + column defs + EOFs) that collect_response_tracked cannot parse
+        // because it mistakes the first byte 0x00 for a regular OK packet.
+        let is_prepare = packet.first().copied() == Some(command::COM_STMT_PREPARE);
+
+        let (bytes, session_changes, write_gtid) = if is_prepare {
+            let bytes = collect_prepare_response(&mut self.reader).await?;
+            (bytes, Vec::new(), None)
+        } else {
+            collect_response_tracked(&mut self.reader).await?
+        };
         let is_error = bytes.get(4).copied() == Some(0xFF);
         Ok(BackendResponse {
             bytes,
@@ -446,6 +455,14 @@ impl BackendConnection for MySQLBackendConnection {
             session_changes,
             write_gtid,
         })
+    }
+
+    async fn send_raw_no_response(&mut self, packet: &[u8]) -> Result<(), ProtocolError> {
+        self.codec.reset_sequence();
+        self.codec.buffer_packet(packet)?;
+        self.codec.flush_maybe_compressed(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
     }
 
     async fn ping(&mut self) -> Result<(), ProtocolError> {
@@ -1087,6 +1104,62 @@ async fn collect_raw_packet<R: AsyncReadExt + Unpin>(
     buf.extend_from_slice(&header);
     buf.extend_from_slice(&payload);
     Ok(())
+}
+
+/// Collect the full response to a `COM_STMT_PREPARE` command.
+///
+/// Response layout (MySQL protocol):
+/// - 1 PREPARE_OK packet (12 bytes payload):
+///   status(1=0x00) + stmt_id(4) + num_columns(2) + num_params(2)
+///   + reserved(1) + warning_count(2)
+/// - If `num_params > 0`: `num_params` column-definition packets + 1 EOF packet
+/// - If `num_columns > 0`: `num_columns` column-definition packets + 1 EOF packet
+///
+/// If the first byte is 0xFF (ERR), only that packet is returned.
+async fn collect_prepare_response<R: AsyncReadExt + Unpin>(
+    reader: &mut R,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut buf = Vec::new();
+
+    // Read the first packet (PREPARE_OK or ERR).
+    let mut header = [0u8; 4];
+    reader.read_exact(&mut header).await?;
+    let length = u24_le(&header);
+    let mut payload = vec![0u8; length];
+    reader.read_exact(&mut payload).await?;
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&payload);
+
+    // ERR packet: nothing more to read.
+    if payload.first().copied() == Some(0xFF) {
+        return Ok(buf);
+    }
+    // Anything else than 0x00 is unexpected; return what we have.
+    if payload.first().copied() != Some(0x00) || payload.len() < 12 {
+        return Ok(buf);
+    }
+
+    let num_columns = u16::from_le_bytes([payload[5], payload[6]]);
+    let num_params = u16::from_le_bytes([payload[7], payload[8]]);
+
+    // Read num_params column-definition packets + EOF.
+    if num_params > 0 {
+        for _ in 0..num_params {
+            collect_raw_packet(reader, &mut buf).await?;
+        }
+        // EOF packet (or OK if CLIENT_DEPRECATE_EOF — we don't negotiate it).
+        collect_raw_packet(reader, &mut buf).await?;
+    }
+
+    // Read num_columns column-definition packets + EOF.
+    if num_columns > 0 {
+        for _ in 0..num_columns {
+            collect_raw_packet(reader, &mut buf).await?;
+        }
+        collect_raw_packet(reader, &mut buf).await?;
+    }
+
+    Ok(buf)
 }
 
 #[inline]

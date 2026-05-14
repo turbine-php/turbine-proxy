@@ -93,7 +93,7 @@ impl CompiledRule {
 /// with each other.
 pub struct Rewriter {
     /// Double-Arc: outer for shared ownership, inner for lock-free snapshots.
-    inner: Arc<std::sync::RwLock<Arc<Vec<CompiledRule>>>>,
+    inner: Arc<parking_lot::RwLock<Arc<Vec<CompiledRule>>>>,
     /// Path to the TOML config file — needed by `reload_from_file`.
     config_path: Arc<String>,
 }
@@ -107,7 +107,7 @@ impl Rewriter {
     ) -> anyhow::Result<Arc<Self>> {
         let rules = compile_rules(configs)?;
         Ok(Arc::new(Self {
-            inner: Arc::new(std::sync::RwLock::new(Arc::new(rules))),
+            inner: Arc::new(parking_lot::RwLock::new(Arc::new(rules))),
             config_path: Arc::new(config_path.into()),
         }))
     }
@@ -125,7 +125,7 @@ impl Rewriter {
         .context("reload task panicked")??;
         let count = rules.len();
         {
-            let mut guard = self.inner.write().expect("rewriter lock poisoned");
+            let mut guard = self.inner.write();
             *guard = Arc::new(rules);
         }
         log::info!(
@@ -145,7 +145,7 @@ impl Rewriter {
         let rules = compile_rules(configs)?;
         let count = rules.len();
         {
-            let mut guard = self.inner.write().expect("rewriter lock poisoned");
+            let mut guard = self.inner.write();
             *guard = Arc::new(rules);
         }
         log::info!(
@@ -162,7 +162,7 @@ impl Rewriter {
     pub fn apply(&self, sql: &str) -> RewriteOutcome {
         // Clone the inner Arc to release the lock before pattern matching.
         let rules = {
-            let guard = self.inner.read().expect("rewriter lock poisoned");
+            let guard = self.inner.read();
             Arc::clone(&*guard)
         };
         for rule in rules.iter() {
@@ -210,7 +210,7 @@ impl Rewriter {
     /// Return a snapshot of all rules with their current hit counters.
     pub fn snapshot(&self) -> Vec<RewriteRuleStat> {
         let rules = {
-            let guard = self.inner.read().expect("rewriter lock poisoned");
+            let guard = self.inner.read();
             Arc::clone(&*guard)
         };
         rules
@@ -230,7 +230,7 @@ impl Rewriter {
 
     /// True when there are no compiled rules (fast-path skip in router).
     pub fn is_empty(&self) -> bool {
-        let guard = self.inner.read().expect("rewriter lock poisoned");
+        let guard = self.inner.read();
         guard.is_empty()
     }
 }

@@ -18,7 +18,11 @@ use crate::proxy::server::ProxyMetrics;
 ///
 /// The function is `async` because reading pool idle-connection counts requires
 /// briefly locking the pool's `Mutex<Vec<…>>`.
-pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
+pub async fn render(
+    metrics: &ProxyMetrics,
+    pool: &BackendPool,
+    pg_pool: Option<&BackendPool>,
+) -> String {
     let mut out = String::with_capacity(8192);
 
     // ── turbineproxy_build_info ─────────────────────────────────────────────
@@ -214,6 +218,177 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
         pool_stats.failover_events_total
     )
     .ok();
+
+    out.push_str("\n# HELP turbineproxy_ha_failover_flap_total Total failover flap events (re-triggered within cooldown window).\n");
+    out.push_str("# TYPE turbineproxy_ha_failover_flap_total counter\n");
+    writeln!(
+        out,
+        "turbineproxy_ha_failover_flap_total {}",
+        pool_stats.failover_flap_total
+    )
+    .ok();
+
+    // ── Circuit breaker metrics ──────────────────────────────────────────────
+    out.push_str("\n# HELP turbineproxy_circuit_breaker_state Circuit breaker state per backend (0=closed, 1=half-open, 2=open).\n");
+    out.push_str("# TYPE turbineproxy_circuit_breaker_state gauge\n");
+    writeln!(
+        out,
+        "turbineproxy_circuit_breaker_state{{backend=\"primary\"}} {}",
+        pool.primary_breaker.state() as u8
+    )
+    .ok();
+    for (i, cb) in pool.replica_breakers.iter().enumerate() {
+        writeln!(
+            out,
+            "turbineproxy_circuit_breaker_state{{backend=\"replica_{i}\"}} {}",
+            cb.state() as u8
+        )
+        .ok();
+    }
+
+    // ── Wait queue metrics ───────────────────────────────────────────────────
+    out.push_str("\n# HELP turbineproxy_pool_wait_queue_length Current number of requests waiting for a pool slot.\n");
+    out.push_str("# TYPE turbineproxy_pool_wait_queue_length gauge\n");
+    let mut total_waiters = pool
+        .primary
+        .wait_queue_length
+        .load(std::sync::atomic::Ordering::Relaxed);
+    for r in &pool.replicas {
+        total_waiters += r
+            .wait_queue_length
+            .load(std::sync::atomic::Ordering::Relaxed);
+    }
+    writeln!(out, "turbineproxy_pool_wait_queue_length {total_waiters}").ok();
+
+    out.push_str("\n# HELP turbineproxy_pool_wait_timeouts_total Total requests that timed out waiting in the pool queue.\n");
+    out.push_str("# TYPE turbineproxy_pool_wait_timeouts_total counter\n");
+    let mut total_timeouts = pool
+        .primary
+        .wait_timeouts_total
+        .load(std::sync::atomic::Ordering::Relaxed);
+    for r in &pool.replicas {
+        total_timeouts += r
+            .wait_timeouts_total
+            .load(std::sync::atomic::Ordering::Relaxed);
+    }
+    writeln!(
+        out,
+        "turbineproxy_pool_wait_timeouts_total {total_timeouts}"
+    )
+    .ok();
+
+    // ── Multiplexing metrics (Fase A) ────────────────────────────────────────
+    out.push_str("\n# HELP turbineproxy_session_pinned_total Sessions that became sticky (user-defined variable or LOCK TABLES). Pinned sessions cannot multiplex backend connections.\n");
+    out.push_str("# TYPE turbineproxy_session_pinned_total counter\n");
+    writeln!(
+        out,
+        "turbineproxy_session_pinned_total {}",
+        metrics.sessions_pinned_total.load(Ordering::Relaxed)
+    )
+    .ok();
+
+    // multiplex_ratio = active_clients / backend_conns_in_use
+    // > 1.0 means multiplexing is working (fewer backend conns than clients).
+    let active = metrics.connections_active.load(Ordering::Relaxed);
+    let backend_in_use = pool_stats.primary_in_use + pool_stats.replica_in_use;
+    let ratio = if backend_in_use == 0 {
+        if active == 0 {
+            1.0_f64
+        } else {
+            active as f64
+        }
+    } else {
+        active as f64 / backend_in_use as f64
+    };
+    out.push_str("\n# HELP turbineproxy_multiplex_ratio Ratio of active client connections to backend connections in use. Values > 1 indicate effective multiplexing.\n");
+    out.push_str("# TYPE turbineproxy_multiplex_ratio gauge\n");
+    writeln!(out, "turbineproxy_multiplex_ratio {ratio:.4}").ok();
+
+    // ── Dashboard auth failure counter ─────────────────────────────────────────
+    out.push_str("\n# HELP turbineproxy_dashboard_auth_failures_total Total failed dashboard authentication attempts (invalid credentials or expired/missing tokens).\n");
+    out.push_str("# TYPE turbineproxy_dashboard_auth_failures_total counter\n");
+    writeln!(
+        out,
+        "turbineproxy_dashboard_auth_failures_total {}",
+        metrics.dashboard_auth_failures.load(Ordering::Relaxed)
+    )
+    .ok();
+    if let Some(pg) = pg_pool {
+        let pg_stats = pg.backend_stats().await;
+        let pg_pool_stats = pg.pool_stats().await;
+
+        out.push_str("\n# HELP turbineproxy_pg_replica_lag_seconds Replication lag in seconds for each PostgreSQL replica (from pg_last_xact_replay_timestamp).\n");
+        out.push_str("# TYPE turbineproxy_pg_replica_lag_seconds gauge\n");
+        for b in &pg_stats {
+            if b.role == "replica" {
+                let lag_secs = b.lag_ms as f64 / 1000.0;
+                writeln!(
+                    out,
+                    "turbineproxy_pg_replica_lag_seconds{{backend=\"{}\"}} {lag_secs:.3}",
+                    b.addr
+                )
+                .ok();
+            }
+        }
+
+        out.push_str("\n# HELP turbineproxy_pg_backend_healthy 1 if the PostgreSQL backend passed its last health check, 0 otherwise.\n");
+        out.push_str("# TYPE turbineproxy_pg_backend_healthy gauge\n");
+        for b in &pg_stats {
+            writeln!(
+                out,
+                "turbineproxy_pg_backend_healthy{{backend=\"{}\",role=\"{}\"}} {}",
+                b.addr,
+                b.role,
+                if b.healthy { 1 } else { 0 }
+            )
+            .ok();
+        }
+
+        out.push_str("\n# HELP turbineproxy_pg_ha_failover_active 1 when a PostgreSQL HA failover replica is serving as primary, 0 otherwise.\n");
+        out.push_str("# TYPE turbineproxy_pg_ha_failover_active gauge\n");
+        writeln!(
+            out,
+            "turbineproxy_pg_ha_failover_active {}",
+            if pg_pool_stats.failover_active { 1 } else { 0 }
+        )
+        .ok();
+
+        out.push_str("\n# HELP turbineproxy_pg_ha_failover_events_total Total PostgreSQL HA failover events since process start.\n");
+        out.push_str("# TYPE turbineproxy_pg_ha_failover_events_total counter\n");
+        writeln!(
+            out,
+            "turbineproxy_pg_ha_failover_events_total {}",
+            pg_pool_stats.failover_events_total
+        )
+        .ok();
+
+        out.push_str("\n# HELP turbineproxy_pg_circuit_breaker_state PostgreSQL circuit breaker state per backend (0=closed, 1=half-open, 2=open).\n");
+        out.push_str("# TYPE turbineproxy_pg_circuit_breaker_state gauge\n");
+        writeln!(
+            out,
+            "turbineproxy_pg_circuit_breaker_state{{backend=\"primary\"}} {}",
+            pg.primary_breaker.state() as u8
+        )
+        .ok();
+        for (i, cb) in pg.replica_breakers.iter().enumerate() {
+            writeln!(
+                out,
+                "turbineproxy_pg_circuit_breaker_state{{backend=\"replica_{i}\"}} {}",
+                cb.state() as u8
+            )
+            .ok();
+        }
+
+        out.push_str("\n# HELP turbineproxy_pg_discovered_replicas Number of streaming standbys discovered via pg_stat_replication on the primary.\n");
+        out.push_str("# TYPE turbineproxy_pg_discovered_replicas gauge\n");
+        writeln!(
+            out,
+            "turbineproxy_pg_discovered_replicas {}",
+            pg.pg_discovered_replicas
+                .load(std::sync::atomic::Ordering::Relaxed)
+        )
+        .ok();
+    }
 
     out
 }
