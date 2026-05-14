@@ -133,19 +133,20 @@ jobs:
           - db-label: MariaDB 10.11
             db-image: mariadb:10.11
             db-port: 3306
-            db-cmd: ""
+            db-cmd: "mariadbd"
             health-cmd: "healthcheck.sh --connect --innodb_initialized"
           - db-label: MariaDB 11.4
             db-image: mariadb:11.4
             db-port: 3306
-            db-cmd: ""
+            db-cmd: "mariadbd"
             health-cmd: "healthcheck.sh --connect --innodb_initialized"
 
     services:
       mysql:
         image: ${{ matrix.db-image }}
-        # Pass mysqld startup flags (e.g. --mysql-native-passwords=ON for 8.4).
-        # Empty string for MariaDB entries — Docker uses the image default CMD.
+        # Pass mysqld startup flags (e.g. --mysql-native-passwords=ON for mysql 8.4).
+        # MariaDB entries use 'mariadbd' (the image default CMD) to avoid an empty
+        # command override breaking the container.
         command: ${{ matrix.db-cmd }}
         env:
           # MySQL uses MYSQL_ROOT_PASSWORD; MariaDB accepts both.
