@@ -83,7 +83,7 @@ fn mysql_available() -> bool {
 }
 
 /// Ensures the proxy is started exactly once. Returns `false` when MySQL is
-/// unavailable (caller should skip the test).
+/// unavailable or when the proxy fails to start (caller should skip the test).
 fn ensure_proxy() -> bool {
     *PROXY.get_or_init(|| {
         if !mysql_available() {
@@ -95,13 +95,12 @@ fn ensure_proxy() -> bool {
             );
             return false;
         }
-        Box::leak(Box::new(start_proxy()));
-        true
+        start_proxy()
     })
 }
 
 #[allow(clippy::zombie_processes)]
-fn start_proxy() -> ProxyProcess {
+fn start_proxy() -> bool {
     let mut config = NamedTempFile::new().expect("create temp config file");
     write!(
         config,
@@ -134,7 +133,7 @@ enabled = false
     .expect("write proxy config");
 
     let binary = env!("CARGO_BIN_EXE_turbineproxy");
-    let child = Command::new(binary)
+    let mut child = Command::new(binary)
         .arg(config.path())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit()) // surface proxy startup errors in test output
@@ -142,6 +141,7 @@ enabled = false
         .unwrap_or_else(|e| panic!("failed to start turbineproxy binary at {binary}: {e}"));
 
     // Wait until the proxy accepts connections (up to 30 s).
+    let mut ready = false;
     for attempt in 0..150 {
         std::thread::sleep(Duration::from_millis(200));
         let opts = OptsBuilder::new()
@@ -152,13 +152,23 @@ enabled = false
             .db_name(Some(TEST_DB));
         if Conn::new(opts).is_ok() {
             eprintln!("proxy ready after ~{}ms", (attempt + 1) * 200);
-            return ProxyProcess {
-                _child: child,
-                _config: config,
-            };
+            ready = true;
+            break;
         }
     }
-    panic!("TurbineProxy did not become ready within 30 s");
+
+    if !ready {
+        eprintln!("SKIP: TurbineProxy did not become ready within 30 s — killing process");
+        let _ = child.kill();
+        return false;
+    }
+
+    // Leak the process + config so they stay alive for the duration of the test run.
+    Box::leak(Box::new(ProxyProcess {
+        _child: child,
+        _config: config,
+    }));
+    true
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

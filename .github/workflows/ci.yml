@@ -147,6 +147,7 @@ jobs:
         ports:
           - ${{ matrix.db-port }}:3306
         options: >-
+          --name mysql-service
           --health-cmd="${{ matrix.health-cmd }}"
           --health-interval=5s
           --health-timeout=5s
@@ -162,6 +163,16 @@ jobs:
         with:
           # Separate cache per DB image so linker artefacts don't conflict.
           key: ${{ matrix.db-image }}
+
+      # MySQL 8.4 disabled mysql_native_password by default. Re-enable it so
+      # the proxy can authenticate to the backend using native password auth.
+      - name: configure mysql 8.4 native password auth
+        if: matrix.db-image == 'mysql:8.4'
+        run: |
+          docker exec mysql-service mysql -uroot -proot -e \
+            "ALTER USER 'root'@'%' IDENTIFIED WITH mysql_native_password BY 'root'; \
+             ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'root'; \
+             FLUSH PRIVILEGES;"
 
       # Build both the proxy binary and the test binary in one shot.
       - name: cargo build
