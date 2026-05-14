@@ -198,12 +198,16 @@ impl ProxyServer {
                 config.connection_max_idle_secs,
             ))
         };
-        let pool = Arc::new(BackendPool::with_idle_timeout(
+        let pool = Arc::new(BackendPool::with_options(
             &config.primary,
             &config.replicas,
             config.pool_size,
             protocol.clone(),
             idle_timeout,
+            config.ha.circuit_breaker_threshold,
+            config.ha.circuit_breaker_recovery_ms,
+            config.pool_wait_queue_size,
+            config.pool_wait_timeout_ms,
         ));
 
         let max_query_time_ms = config.max_query_time_ms;
@@ -281,12 +285,16 @@ impl ProxyServer {
                 new_config.connection_max_idle_secs,
             ))
         };
-        let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
+        let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_options(
             &new_config.primary,
             &new_config.replicas,
             new_config.pool_size,
             self.protocol.clone(),
             idle_timeout,
+            new_config.ha.circuit_breaker_threshold,
+            new_config.ha.circuit_breaker_recovery_ms,
+            new_config.pool_wait_queue_size,
+            new_config.pool_wait_timeout_ms,
         ));
         self.router.reload_pool(new_pool).await;
         log::info!(

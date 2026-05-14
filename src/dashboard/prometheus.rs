@@ -242,6 +242,37 @@ pub async fn render(metrics: &ProxyMetrics, pool: &BackendPool) -> String {
         .ok();
     }
 
+    // ── Wait queue metrics ───────────────────────────────────────────────────
+    out.push_str("\n# HELP turbineproxy_pool_wait_queue_length Current number of requests waiting for a pool slot.\n");
+    out.push_str("# TYPE turbineproxy_pool_wait_queue_length gauge\n");
+    let mut total_waiters = pool
+        .primary
+        .wait_queue_length
+        .load(std::sync::atomic::Ordering::Relaxed);
+    for r in &pool.replicas {
+        total_waiters += r
+            .wait_queue_length
+            .load(std::sync::atomic::Ordering::Relaxed);
+    }
+    writeln!(out, "turbineproxy_pool_wait_queue_length {total_waiters}").ok();
+
+    out.push_str("\n# HELP turbineproxy_pool_wait_timeouts_total Total requests that timed out waiting in the pool queue.\n");
+    out.push_str("# TYPE turbineproxy_pool_wait_timeouts_total counter\n");
+    let mut total_timeouts = pool
+        .primary
+        .wait_timeouts_total
+        .load(std::sync::atomic::Ordering::Relaxed);
+    for r in &pool.replicas {
+        total_timeouts += r
+            .wait_timeouts_total
+            .load(std::sync::atomic::Ordering::Relaxed);
+    }
+    writeln!(
+        out,
+        "turbineproxy_pool_wait_timeouts_total {total_timeouts}"
+    )
+    .ok();
+
     out
 }
 

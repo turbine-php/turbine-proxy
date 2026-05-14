@@ -645,13 +645,17 @@ pub async fn reload_backends(State(state): State<AppState>) -> Json<ReloadRespon
                     new_cfg.connection_max_idle_secs,
                 ))
             };
-            let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
+            let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_options(
                 &new_cfg.primary,
                 &new_cfg.replicas,
                 new_cfg.pool_size,
                 // Re-use the protocol from the existing pool (it's Arc-cloned).
                 state.pool.primary.protocol.clone(),
                 idle_timeout,
+                new_cfg.ha.circuit_breaker_threshold,
+                new_cfg.ha.circuit_breaker_recovery_ms,
+                new_cfg.pool_wait_queue_size,
+                new_cfg.pool_wait_timeout_ms,
             ));
             state.proxy_router.reload_pool(new_pool).await;
 
@@ -755,12 +759,16 @@ pub async fn cluster_sync(
             new_cfg.connection_max_idle_secs,
         ))
     };
-    let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_idle_timeout(
+    let new_pool = Arc::new(crate::proxy::pool::BackendPool::with_options(
         &new_cfg.primary,
         &new_cfg.replicas,
         new_cfg.pool_size,
         state.pool.primary.protocol.clone(),
         idle_timeout,
+        new_cfg.ha.circuit_breaker_threshold,
+        new_cfg.ha.circuit_breaker_recovery_ms,
+        new_cfg.pool_wait_queue_size,
+        new_cfg.pool_wait_timeout_ms,
     ));
     state.proxy_router.reload_pool(new_pool).await;
 

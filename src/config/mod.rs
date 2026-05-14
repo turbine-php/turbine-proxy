@@ -25,6 +25,19 @@ pub struct ProxyConfig {
     #[serde(default = "default_pool_size")]
     pub pool_size: usize,
 
+    /// Bounded wait queue size per backend.
+    /// When a backend's `max_connections` is reached, up to this many requests
+    /// will wait for a free slot instead of being rejected immediately.
+    /// 0 = reject-fast (default, legacy behaviour).
+    #[serde(default)]
+    pub pool_wait_queue_size: usize,
+
+    /// Maximum time (milliseconds) a request will wait in the pool queue
+    /// before being rejected. Only applies when `pool_wait_queue_size > 0`.
+    /// Default: 5000 ms.
+    #[serde(default = "default_pool_wait_timeout_ms")]
+    pub pool_wait_timeout_ms: u64,
+
     /// Primary (read-write) MySQL backend
     pub primary: BackendConfig,
 
@@ -266,6 +279,10 @@ struct RawProxyConfig {
     pub listen_addr: Option<String>,
     pub max_connections: Option<usize>,
     pub pool_size: Option<usize>,
+    #[serde(default)]
+    pub pool_wait_queue_size: usize,
+    #[serde(default = "default_pool_wait_timeout_ms")]
+    pub pool_wait_timeout_ms: u64,
     pub primary: Option<BackendConfig>,
     #[serde(default)]
     pub replicas: Vec<BackendConfig>,
@@ -907,6 +924,10 @@ fn default_pool_size() -> usize {
     20
 }
 
+fn default_pool_wait_timeout_ms() -> u64 {
+    5000
+}
+
 fn default_true() -> bool {
     true
 }
@@ -1048,6 +1069,15 @@ pub struct PgsqlConfig {
     /// Connection pool size per PostgreSQL backend (default: 10).
     #[serde(default = "default_pgsql_pool_size")]
     pub pool_size: usize,
+
+    /// Bounded wait queue size per PostgreSQL backend.
+    /// 0 = reject-fast (default).
+    #[serde(default)]
+    pub pool_wait_queue_size: usize,
+
+    /// Maximum time (ms) a request waits in the pool queue. Default: 5000.
+    #[serde(default = "default_pool_wait_timeout_ms")]
+    pub pool_wait_timeout_ms: u64,
 
     /// Maximum concurrent PostgreSQL client connections (0 = no limit).
     #[serde(default)]
@@ -1229,6 +1259,8 @@ impl ProxyConfig {
             listen_addr,
             max_connections,
             pool_size,
+            pool_wait_queue_size: raw.pool_wait_queue_size,
+            pool_wait_timeout_ms: raw.pool_wait_timeout_ms,
             primary,
             replicas,
             analytics: raw.analytics,

@@ -211,6 +211,19 @@ This page documents every failure mode that TurbineProxy handles, what it does i
 
 ---
 
+## 17. Backend pool saturated (wait queue)
+
+| Attribute | Detail |
+|-----------|--------|
+| **Trigger** | A backend's per-backend `max_connections` limit is reached |
+| **Proxy action (queue disabled, default)** | Rejects immediately with an error ("connection limit reached; try again later") |
+| **Proxy action (queue enabled)** | Request enters a bounded wait queue (`pool_wait_queue_size`) and blocks up to `pool_wait_timeout_ms`. If a slot frees within the timeout, the request proceeds normally. If the timeout expires, the request is rejected. |
+| **Client sees** | Either transparent delay (if slot frees in time) or connection error |
+| **Observability** | `turbineproxy_pool_wait_queue_length` (gauge), `turbineproxy_pool_wait_timeouts_total` (counter). `WARN` log: `[pool] wait queue timeout for backend ...` |
+| **Config** | `pool_wait_queue_size` (0 = reject-fast), `pool_wait_timeout_ms` (default 5000) |
+
+---
+
 ## Summary: degradation matrix
 
 | What fails | HA enabled | Client sees | Writes continue | Reads continue |

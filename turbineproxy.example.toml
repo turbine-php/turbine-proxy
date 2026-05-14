@@ -28,6 +28,14 @@ pool_size       = 20
 # auth_cache_ttl_secs      = 300
 # read_your_own_writes_ms  = 0
 
+# ── Bounded wait queue (optional) ────────────────────────────────────────────
+# When a backend's max_connections is reached, up to pool_wait_queue_size requests
+# will wait for a free slot instead of being rejected immediately.
+# 0 = reject-fast (default, legacy behaviour).
+# pool_wait_queue_size    = 0
+# Maximum time (ms) a request waits in the queue before being rejected. Default: 5000.
+# pool_wait_timeout_ms    = 5000
+
 # Primary (read-write) backend.  Both MySQL and PostgreSQL listeners share this
 # backend unless overridden inside [mysql] or [pgsql].
 [shared.primary]

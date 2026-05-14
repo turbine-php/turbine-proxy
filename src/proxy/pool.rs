@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
 
 use crate::config::BackendConfig;
 use crate::protocol::{BackendConnection, DatabaseProtocol};
@@ -91,6 +92,16 @@ pub struct ConnectionPool {
     pub connections_reused: AtomicUsize,
     /// Connections discarded because they exceeded `max_idle`.
     pub connections_evicted: AtomicUsize,
+    /// Wait queue semaphore — when the backend is at `max_connections`, incoming
+    /// requests acquire a permit here instead of being rejected immediately.
+    /// `None` when `pool_wait_queue_size == 0` (reject-fast, default behaviour).
+    wait_queue: Option<Arc<Semaphore>>,
+    /// Timeout for waiting in the queue before giving up (reject).
+    wait_timeout: Duration,
+    /// Current number of waiters blocked in the queue.
+    pub wait_queue_length: AtomicUsize,
+    /// Total requests that timed out waiting in the queue.
+    pub wait_timeouts_total: AtomicUsize,
 }
 
 impl ConnectionPool {
@@ -100,6 +111,24 @@ impl ConnectionPool {
         protocol: Arc<dyn DatabaseProtocol>,
         max_idle: Option<Duration>,
     ) -> Self {
+        Self::with_wait_queue(config, max_size, protocol, max_idle, 0, 5000)
+    }
+
+    /// Create a pool with an optional bounded wait queue.
+    /// `wait_queue_size = 0` preserves the reject-fast default.
+    pub fn with_wait_queue(
+        config: &BackendConfig,
+        max_size: usize,
+        protocol: Arc<dyn DatabaseProtocol>,
+        max_idle: Option<Duration>,
+        wait_queue_size: usize,
+        wait_timeout_ms: u64,
+    ) -> Self {
+        let wait_queue = if wait_queue_size > 0 {
+            Some(Arc::new(Semaphore::new(wait_queue_size)))
+        } else {
+            None
+        };
         Self {
             config: config.clone(),
             connections: Arc::new(Mutex::new(HashMap::new())),
@@ -112,6 +141,10 @@ impl ConnectionPool {
             connections_created: AtomicUsize::new(0),
             connections_reused: AtomicUsize::new(0),
             connections_evicted: AtomicUsize::new(0),
+            wait_queue,
+            wait_timeout: Duration::from_millis(wait_timeout_ms),
+            wait_queue_length: AtomicUsize::new(0),
+            wait_timeouts_total: AtomicUsize::new(0),
         }
     }
 
@@ -160,11 +193,39 @@ impl ConnectionPool {
         // Enforce backend max_connections before opening a new TCP connection.
         if let Some(max) = self.config.max_connections {
             if self.borrowed.load(Ordering::Relaxed) >= max {
-                return Err(anyhow::anyhow!(
-                    "backend {} connection limit reached (max: {}); try again later",
-                    self.config.addr,
-                    max
-                ));
+                // If a wait queue is configured, block until a slot opens or timeout.
+                if let Some(ref sem) = self.wait_queue {
+                    self.wait_queue_length.fetch_add(1, Ordering::Relaxed);
+                    let result = tokio::time::timeout(self.wait_timeout, sem.acquire()).await;
+                    self.wait_queue_length.fetch_sub(1, Ordering::Relaxed);
+                    match result {
+                        Ok(Ok(permit)) => {
+                            // Got a slot — forget the permit (we track via `borrowed` counter).
+                            permit.forget();
+                        }
+                        _ => {
+                            self.wait_timeouts_total.fetch_add(1, Ordering::Relaxed);
+                            log::warn!(
+                                "[pool] wait queue timeout for backend {} (waited {}ms, max: {})",
+                                self.config.addr,
+                                self.wait_timeout.as_millis(),
+                                max
+                            );
+                            return Err(anyhow::anyhow!(
+                                "backend {} connection limit reached and wait queue timed out (max: {}, timeout: {}ms)",
+                                self.config.addr,
+                                max,
+                                self.wait_timeout.as_millis()
+                            ));
+                        }
+                    }
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "backend {} connection limit reached (max: {}); try again later",
+                        self.config.addr,
+                        max
+                    ));
+                }
             }
         }
 
@@ -202,6 +263,10 @@ impl ConnectionPool {
     /// Return a connection to a specific database bucket.
     pub async fn put_for_database(&self, conn: Box<dyn BackendConnection>, database: Option<&str>) {
         self.borrowed.fetch_sub(1, Ordering::Relaxed);
+        // Signal a waiter that a slot is available.
+        if let Some(ref sem) = self.wait_queue {
+            sem.add_permits(1);
+        }
         if conn.in_transaction() || !conn.is_healthy() {
             return;
         }
@@ -274,7 +339,7 @@ impl BackendPool {
         protocol: Arc<dyn DatabaseProtocol>,
         max_idle: Option<Duration>,
     ) -> Self {
-        Self::with_circuit_breaker(
+        Self::with_options(
             primary_config,
             replica_configs,
             pool_size,
@@ -282,9 +347,12 @@ impl BackendPool {
             max_idle,
             5,
             10000,
+            0,
+            5000,
         )
     }
 
+    #[allow(dead_code)]
     pub fn with_circuit_breaker(
         primary_config: &BackendConfig,
         replica_configs: &[BackendConfig],
@@ -294,15 +362,51 @@ impl BackendPool {
         cb_threshold: u32,
         cb_recovery_ms: u64,
     ) -> Self {
-        let primary = ConnectionPool::with_idle_timeout(
+        Self::with_options(
+            primary_config,
+            replica_configs,
+            pool_size,
+            protocol,
+            max_idle,
+            cb_threshold,
+            cb_recovery_ms,
+            0,
+            5000,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_options(
+        primary_config: &BackendConfig,
+        replica_configs: &[BackendConfig],
+        pool_size: usize,
+        protocol: Arc<dyn DatabaseProtocol>,
+        max_idle: Option<Duration>,
+        cb_threshold: u32,
+        cb_recovery_ms: u64,
+        wait_queue_size: usize,
+        wait_timeout_ms: u64,
+    ) -> Self {
+        let primary = ConnectionPool::with_wait_queue(
             primary_config,
             pool_size,
             protocol.clone(),
             max_idle,
+            wait_queue_size,
+            wait_timeout_ms,
         );
         let replicas = replica_configs
             .iter()
-            .map(|c| ConnectionPool::with_idle_timeout(c, pool_size, protocol.clone(), max_idle))
+            .map(|c| {
+                ConnectionPool::with_wait_queue(
+                    c,
+                    pool_size,
+                    protocol.clone(),
+                    max_idle,
+                    wait_queue_size,
+                    wait_timeout_ms,
+                )
+            })
             .collect();
 
         let replica_health = replica_configs

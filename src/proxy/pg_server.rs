@@ -190,12 +190,16 @@ impl PgProxyServer {
             Some(Duration::from_secs(config.connection_max_idle_secs))
         };
 
-        let pool = Arc::new(BackendPool::with_idle_timeout(
+        let pool = Arc::new(BackendPool::with_options(
             primary_cfg,
             &config.replicas,
             config.pool_size,
             protocol.clone(),
             idle,
+            5,
+            10000,
+            config.pool_wait_queue_size,
+            config.pool_wait_timeout_ms,
         ));
 
         let router = Router::new(pool.clone(), rules, rewriter, protocol.clone());
