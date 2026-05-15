@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.5.1] - 2026-05-15
+
+### Bug Fixes
+
+- **PostgreSQL prepared statement leak** — Connections returned to the pool now
+  execute `DEALLOCATE ALL` before being reused. Prevents "prepared statement
+  already exists" errors when another client reuses the same backend connection
+  with the same statement names.
+
+- **Dashboard slow queries false positives** — The `/api/slow-queries` endpoint
+  now filters results by the configured `slow_query_ms` threshold (default 100ms).
+  Fast queries like PING no longer appear in the slow queries panel.
+
+- **Heatmap anomaly false positives** — Spike detection (σ-method) now requires
+  at least 12 active (day, hour) cells before flagging anomalies. Avoids marking
+  every slot as a spike when the proxy has just started and has little data.
+
+---
+
 ## [0.5.0] - 2026-05-14
 
 ### Security & Hardening

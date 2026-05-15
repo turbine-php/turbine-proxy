@@ -1,6 +1,6 @@
 [package]
 name = "turbineproxy"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Intelligent MySQL proxy with read/write splitting, query analytics, and automatic index advice"
 license = "Apache-2.0"
