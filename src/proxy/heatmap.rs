@@ -124,15 +124,20 @@ impl HeatmapStore {
         let total_slow: u64 = cells.iter().map(|c| c.slow).sum();
 
         // Anomaly detection — sigma method over query counts.
+        // Require at least 12 active cells (hours with traffic) before flagging
+        // spikes — avoids false positives when the proxy just started.
+        let active_cells = cells.iter().filter(|c| c.queries > 0).count();
         let counts: Vec<f64> = cells.iter().map(|c| c.queries as f64).collect();
         let mean = counts.iter().sum::<f64>() / counts.len() as f64;
         let variance = counts.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / counts.len() as f64;
         let sigma = variance.sqrt();
         let threshold = mean + SIGMA_K * sigma;
 
-        for cell in &mut cells {
-            if sigma > 0.0 && cell.queries as f64 > threshold {
-                cell.is_anomaly = true;
+        if active_cells >= 12 {
+            for cell in &mut cells {
+                if sigma > 0.0 && cell.queries as f64 > threshold {
+                    cell.is_anomaly = true;
+                }
             }
         }
 

@@ -803,7 +803,10 @@ async fn handle_pg_connection(
                 // Release stmt_conn back to the pool when all named prepared
                 // statements have been closed and we are not in a transaction.
                 if pg_shadow.is_empty() && !session.is_in_transaction() {
-                    if let Some(conn) = stmt_conn.take() {
+                    if let Some(mut conn) = stmt_conn.take() {
+                        // Clean up server-side prepared statements before returning
+                        // the connection to the pool — prevents name collisions.
+                        let _ = conn.execute_query(b"DEALLOCATE ALL").await;
                         log::debug!(
                             "[pg conn {}] all stmts closed — releasing stmt_conn to pool",
                             conn_id
@@ -871,7 +874,9 @@ async fn handle_pg_connection(
             .put_primary_for_database(conn, &client_database)
             .await;
     }
-    if let Some(conn) = stmt_conn {
+    if let Some(mut conn) = stmt_conn {
+        // Clean up server-side prepared statements before returning to pool.
+        let _ = conn.execute_query(b"DEALLOCATE ALL").await;
         srv.router
             .put_primary_for_database(conn, &client_database)
             .await;
