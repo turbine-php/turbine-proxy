@@ -588,7 +588,17 @@ pub async fn slow_queries(
         }));
     }
 
-    let rows = collect_query_rows(&state, true).await;
+    let threshold_us = {
+        let cfg = state.proxy_config.read();
+        (cfg.analytics.slow_query_ms * 1_000) as i64
+    };
+
+    let rows: Vec<QueryRow> = collect_query_rows(&state, true)
+        .await
+        .into_iter()
+        .filter(|r| r.p95_us.unwrap_or(0) >= threshold_us)
+        .collect();
+
     Json(serde_json::json!({
         "ok": true,
         "protocol": protocol,
